@@ -1,0 +1,34 @@
+package web
+
+import "tangled.org/xeiaso.net/videosite/internal/xess"
+
+templ Navbar() {
+	@xess.NavBar(
+		[]xess.NavLink{
+			{
+				Href:  "/",
+				Label: "🏠",
+			},
+		},
+	)
+}
+
+templ Footer() {
+	@xess.Footer(footerBody())
+}
+
+templ footerBody() {
+	<p>Made with ❤️ by the nerds at Tigris</p>
+}
+
+templ Index() {
+	<style>
+    video {
+      max-width: 100%;
+    }
+  </style>
+	<div>
+		<video data-dashjs-player controls src="https://xe-videosite.t3.tigrisfiles.io/v/yuki-windurst-promathia/manifest.mpd"></video>
+		<script src="/static/js/dash.js"></script>
+	</div>
+}

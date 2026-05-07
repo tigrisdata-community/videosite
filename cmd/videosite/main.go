@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,13 +12,16 @@ import (
 	"github.com/a-h/templ"
 	"github.com/facebookgo/flagenv"
 	"tangled.org/xeiaso.net/videosite/internal/htmx"
+	"tangled.org/xeiaso.net/videosite/internal/models"
 	"tangled.org/xeiaso.net/videosite/internal/xess"
 	"tangled.org/xeiaso.net/videosite/web"
 )
 
 var (
-	bind  = flag.String("bind", ":8080", "HTTP bind address")
-	dbLoc = flag.String("db-loc", "./var/data.db", "SQLite database location")
+	bind          = flag.String("bind", ":8080", "HTTP bind address")
+	bucketName    = flag.String("bucket-name", "xe-videosite", "Tigris bucket name")
+	bucketURLBase = flag.String("bucket-url-base", "https://xe-videosite.t3.tigrisfiles.io/", "base URL for the bucket with leading slash")
+	dbLoc         = flag.String("db-loc", "./var/data.db", "SQLite database location")
 )
 
 func main() {
@@ -37,12 +41,32 @@ func main() {
 	lg.Info(
 		"starting up",
 		"bind", *bind,
+		"bucket-name", *bucketName,
+		"bucket-url-base", *bucketURLBase,
 		"db-loc", *dbLoc,
 	)
+
+	dao, err := models.New(*dbLoc, lg.With("component", "logger"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	_ = dao
 
 	mux := http.NewServeMux()
 	xess.Mount(mux)
 	htmx.Mount(mux)
+
+	mux.Handle("/static/", http.FileServerFS(web.Static))
+
+	mux.Handle("/{$}", templ.Handler(
+		xess.Base(
+			"videosite",
+			nil,
+			web.Navbar(),
+			web.Index(),
+			web.Footer(),
+		),
+	))
 
 	mux.Handle("/", templ.Handler(
 		xess.Simple("Not found", web.NotFound()),
