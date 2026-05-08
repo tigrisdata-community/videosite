@@ -18,7 +18,7 @@ var (
 const Version = "3.5.11"
 
 // URL is the folder path where alpine.js is served from.
-const URL = "/.within.website/x/web/alpinejs"
+const URL = "/.within.website/x/web/alpinejs/"
 
 func Mount(mux *http.ServeMux) {
 	hdlr := http.StripPrefix(URL, http.FileServer(http.FS(Static)))
