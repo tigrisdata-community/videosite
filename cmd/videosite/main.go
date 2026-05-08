@@ -61,7 +61,7 @@ func main() {
 	mux.Handle("/{$}", templ.Handler(
 		xess.Base(
 			"videosite",
-			nil,
+			web.HeadArea(),
 			web.Navbar(),
 			web.Index(),
 			web.Footer(),

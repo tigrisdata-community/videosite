@@ -1,6 +1,9 @@
 package web
 
-import "tangled.org/xeiaso.net/videosite/internal/xess"
+import (
+	"tangled.org/xeiaso.net/videosite/internal/htmx"
+	"tangled.org/xeiaso.net/videosite/internal/xess"
+)
 
 templ Navbar() {
 	@xess.NavBar(
@@ -31,4 +34,8 @@ templ Index() {
 		<video data-dashjs-player controls src="https://xe-videosite.t3.tigrisfiles.io/v/yuki-windurst-promathia/manifest.mpd"></video>
 		<script src="/static/js/dash.js"></script>
 	</div>
+}
+
+templ HeadArea() {
+	@htmx.Use("websocket", "remove-me")
 }
