@@ -1,6 +1,7 @@
 package web
 
 import (
+	"tangled.org/xeiaso.net/videosite/internal/alpinejs"
 	"tangled.org/xeiaso.net/videosite/internal/htmx"
 	"tangled.org/xeiaso.net/videosite/internal/xess"
 )
@@ -10,7 +11,11 @@ templ Navbar() {
 		[]xess.NavLink{
 			{
 				Href:  "/",
-				Label: "🏠",
+				Label: "Home",
+			},
+			{
+				Href:  "/upload",
+				Label: "Upload",
 			},
 		},
 	)
@@ -42,4 +47,5 @@ templ Index() {
 
 templ HeadArea() {
 	@htmx.Use("websocket", "remove-me")
+	@alpinejs.Use()
 }

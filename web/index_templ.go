@@ -9,6 +9,7 @@ import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
 import (
+	"tangled.org/xeiaso.net/videosite/internal/alpinejs"
 	"tangled.org/xeiaso.net/videosite/internal/htmx"
 	"tangled.org/xeiaso.net/videosite/internal/xess"
 )
@@ -38,7 +39,11 @@ func Navbar() templ.Component {
 			[]xess.NavLink{
 				{
 					Href:  "/",
-					Label: "🏠",
+					Label: "Home",
+				},
+				{
+					Href:  "/upload",
+					Label: "Upload",
 				},
 			},
 		).Render(ctx, templ_7745c5c3_Buffer)
@@ -158,6 +163,10 @@ func HeadArea() templ.Component {
 		}
 		ctx = templ.ClearChildren(ctx)
 		templ_7745c5c3_Err = htmx.Use("websocket", "remove-me").Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = alpinejs.Use().Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
