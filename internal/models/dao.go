@@ -26,7 +26,7 @@ func New(dbLoc string, lg *slog.Logger) (*DAO, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	if err := db.AutoMigrate(&Video{}); err != nil {
+	if err := db.AutoMigrate(&Video{}, &EncodingJob{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate schema: %w", err)
 	}
 
