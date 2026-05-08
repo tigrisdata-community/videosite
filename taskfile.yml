@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: "3"
+
+vars:
+  GREETING: Hello, world!
+
+tasks:
+  generate:
+    desc: Generate assets
+    cmds:
+      - go generate ./...
+  run:
+    deps: [generate]
+    desc: Run the program in development mode
+    cmds:
+      - go run ./cmd/videosite
+    aliases: [default]
