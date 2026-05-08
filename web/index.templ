@@ -31,9 +31,13 @@ templ Index() {
     }
   </style>
 	<div>
-		<video data-dashjs-player controls src="https://xe-videosite.t3.tigrisfiles.io/v/yuki-windurst-promathia/manifest.mpd"></video>
-		<script src="/static/js/dash.js"></script>
+		<video
+			data-dashjs-player
+			controls
+			src="https://xe-videosite.t3.tigrisfiles.io/v/yuki-windurst-promathia/manifest.mpd"
+		></video>
 	</div>
+	<script src="/static/js/dash.js" async></script>
 }
 
 templ HeadArea() {

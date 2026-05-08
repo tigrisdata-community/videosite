@@ -8,8 +8,10 @@ package web
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-import "tangled.org/xeiaso.net/videosite/internal/xess"
-import "tangled.org/xeiaso.net/videosite/internal/htmx"
+import (
+	"tangled.org/xeiaso.net/videosite/internal/htmx"
+	"tangled.org/xeiaso.net/videosite/internal/xess"
+)
 
 func Navbar() templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
@@ -126,7 +128,7 @@ func Index() templ.Component {
 			templ_7745c5c3_Var4 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<style>\n    video {\n      max-width: 100%;\n    }\n  </style><div><video data-dashjs-player controls src=\"https://xe-videosite.t3.tigrisfiles.io/v/yuki-windurst-promathia/manifest.mpd\"></video><script src=\"/static/js/dash.js\"></script></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<style>\n    video {\n      max-width: 100%;\n    }\n  </style><div><video data-dashjs-player controls src=\"https://xe-videosite.t3.tigrisfiles.io/v/yuki-windurst-promathia/manifest.mpd\"></video></div><script src=\"/static/js/dash.js\" async></script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
