@@ -1,0 +1,33 @@
+package web
+
+import (
+	"tangled.org/xeiaso.net/videosite/internal/models"
+)
+
+templ Upload() {
+	<div x-data="uploader">
+		<p>Pick one or more video files, then click Upload. They go directly to Tigris from your browser.</p>
+		<input type="file" accept="video/*" multiple @change="stage($event.target.files)" :disabled="busy"/>
+		<button type="button" @click="submit()" :disabled="busy || items.length === 0">
+			<span x-show="!busy">Upload</span>
+			<span x-show="busy">Uploading&hellip;</span>
+		</button>
+		<button type="button" @click="reset()" :disabled="busy || items.length === 0">Clear</button>
+		<template x-for="u in items" :key="u.id">
+			<div class="upload-row">
+				<div><strong x-text="u.name"></strong> &mdash; <span x-text="u.status"></span></div>
+				<progress :value="u.pct" max="100"></progress>
+				<div x-show="u.error" x-text="u.error" style="color: red;"></div>
+			</div>
+		</template>
+	</div>
+	<h3>Recent uploads</h3>
+	<ul id="uploads"></ul>
+	<script src="/static/js/upload.js"></script>
+}
+
+templ UploadedRow(v *models.Video) {
+	<li>
+		<code>{ v.ID }</code> &mdash; { string(v.Status) }
+	</li>
+}
