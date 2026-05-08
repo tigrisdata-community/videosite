@@ -20,3 +20,12 @@ tasks:
     desc: SQLite REPL
     cmds:
       - sqlite3 ./var/data.db
+
+  encoder:image:
+    desc: Build and push the encoder Docker image
+    vars:
+      TAG: '{{.TAG | default "latest"}}'
+      REGISTRY: '{{.REGISTRY | default "reg.xeiaso.net/xeserv"}}'
+    cmds:
+      - docker build -f docker/encoder.Dockerfile -t {{.REGISTRY}}/videosite-encoder:{{.TAG}} .
+      - docker push {{.REGISTRY}}/videosite-encoder:{{.TAG}}
