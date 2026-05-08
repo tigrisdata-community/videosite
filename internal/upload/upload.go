@@ -182,7 +182,7 @@ func (h *Handler) singlepartInit(ctx context.Context, w http.ResponseWriter, req
 	id := uuid.NewString()
 	key := "raw/" + id + "/" + req.Name
 
-	if _, err := h.dao.CreateVideo(ctx, id); err != nil {
+	if _, err := h.dao.CreateVideo(ctx, id, req.Name); err != nil {
 		h.log.Error("create video", "err", err, "id", id)
 		writeErr(w, http.StatusInternalServerError, errors.New("create video"))
 		return
@@ -213,7 +213,7 @@ func (h *Handler) multipartInit(ctx context.Context, w http.ResponseWriter, req 
 	id := uuid.NewString()
 	key := "raw/" + id + "/" + req.Name
 
-	if _, err := h.dao.CreateVideo(ctx, id); err != nil {
+	if _, err := h.dao.CreateVideo(ctx, id, req.Name); err != nil {
 		h.log.Error("create video", "err", err, "id", id)
 		writeErr(w, http.StatusInternalServerError, errors.New("create video"))
 		return

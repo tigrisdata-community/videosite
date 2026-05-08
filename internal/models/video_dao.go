@@ -5,8 +5,8 @@ import (
 	"fmt"
 )
 
-func (d *DAO) CreateVideo(ctx context.Context, id string) (*Video, error) {
-	v := &Video{ID: id, Status: VideoStatusUploaded}
+func (d *DAO) CreateVideo(ctx context.Context, id, filename string) (*Video, error) {
+	v := &Video{ID: id, Filename: filename, Status: VideoStatusUploaded}
 	if err := d.db.WithContext(ctx).Create(v).Error; err != nil {
 		return nil, fmt.Errorf("models: create video %q: %w", id, err)
 	}
