@@ -16,3 +16,7 @@ tasks:
     cmds:
       - go run ./cmd/videosite
     aliases: [default]
+  db:
+    desc: SQLite REPL
+    cmds:
+      - sqlite3 ./var/data.db
