@@ -39,12 +39,14 @@ function putWithProgress(url, blob, onProgress) {
   });
 }
 
-async function uploadMultipart(file, onProgress) {
+async function uploadMultipart(item, onProgress) {
+  const file = item.file;
   const init = await postJSON(BROKER_URL, {
     action: "multipart-init",
     name: file.name,
   });
   const { uploadId, key, id } = init.data;
+  item.serverId = id;
 
   const totalParts = Math.max(1, Math.ceil(file.size / PART_SIZE));
   const partNums = Array.from({ length: totalParts }, (_, i) => i + 1);
@@ -129,7 +131,7 @@ document.addEventListener("alpine:init", () => {
           if (item.status !== "ready") continue;
           item.status = "uploading";
           try {
-            const { id, key } = await uploadMultipart(item.file, (loaded, total) => {
+            const { id, key } = await uploadMultipart(item, (loaded, total) => {
               item.pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
             });
             item.pct = 100;
@@ -145,6 +147,13 @@ document.addEventListener("alpine:init", () => {
           } catch (e) {
             item.status = "error";
             item.error = e.message || String(e);
+            if (item.serverId) {
+              fetch("/api/upload/cancel", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({ id: item.serverId, reason: item.error }),
+              }).catch(() => {});
+            }
           }
         }
       } finally {

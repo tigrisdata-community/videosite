@@ -100,6 +100,7 @@ func New(cfg Config, dao *models.DAO, lg *slog.Logger) (*Handler, error) {
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/upload", h.broker)
 	mux.HandleFunc("POST /api/upload/finalize", h.finalize)
+	mux.HandleFunc("POST /api/upload/cancel", h.cancel)
 }
 
 type request struct {
@@ -194,6 +195,9 @@ func (h *Handler) singlepartInit(ctx context.Context, w http.ResponseWriter, req
 	}, s3.WithPresignExpires(h.cfg.Expires))
 	if err != nil {
 		h.log.Error("presign put", "err", err, "key", key)
+		if ferr := h.dao.MarkVideoFailed(ctx, id, "presign: "+err.Error()); ferr != nil {
+			h.log.Error("mark failed after presign error", "err", ferr, "id", id)
+		}
 		writeErr(w, http.StatusInternalServerError, errors.New("presign"))
 		return
 	}
@@ -225,6 +229,9 @@ func (h *Handler) multipartInit(ctx context.Context, w http.ResponseWriter, req 
 	})
 	if err != nil {
 		h.log.Error("create multipart", "err", err, "key", key)
+		if ferr := h.dao.MarkVideoFailed(ctx, id, "create multipart: "+err.Error()); ferr != nil {
+			h.log.Error("mark failed after multipart init error", "err", ferr, "id", id)
+		}
 		writeErr(w, http.StatusInternalServerError, errors.New("create multipart"))
 		return
 	}
@@ -328,6 +335,10 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	if err := h.dao.MarkVideoUploaded(ctx, id); err != nil {
+		if errors.Is(err, models.ErrConflict) {
+			http.Error(w, "video not in uploading state", http.StatusConflict)
+			return
+		}
 		h.log.Error("mark uploaded", "err", err, "id", id)
 		http.Error(w, "mark uploaded", http.StatusInternalServerError)
 		return
@@ -343,6 +354,32 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 	if err := web.UploadedRow(v).Render(ctx, w); err != nil {
 		h.log.Error("render row", "err", err, "id", id)
 	}
+}
+
+func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.FormValue("id")
+	if id == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+	reason := r.FormValue("reason")
+	if reason == "" {
+		reason = "client cancel"
+	}
+	if err := h.dao.MarkVideoFailed(r.Context(), id, reason); err != nil {
+		if errors.Is(err, models.ErrConflict) {
+			http.Error(w, "cannot fail", http.StatusConflict)
+			return
+		}
+		h.log.Error("mark failed", "err", err, "id", id)
+		http.Error(w, "mark failed", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
