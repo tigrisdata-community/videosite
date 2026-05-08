@@ -58,6 +58,11 @@ type Handler struct {
 	presign *s3.PresignClient
 	dao     *models.DAO
 	log     *slog.Logger
+
+	// OnUploaded is invoked after finalize() flips a Video to "uploaded".
+	// The encoder orchestrator hooks into this to create an EncodingJob.
+	// Failures are the callback's problem, not ours — we don't roll back.
+	OnUploaded func(ctx context.Context, videoID string)
 }
 
 func New(cfg Config, dao *models.DAO, lg *slog.Logger) (*Handler, error) {
@@ -342,6 +347,9 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 		h.log.Error("mark uploaded", "err", err, "id", id)
 		http.Error(w, "mark uploaded", http.StatusInternalServerError)
 		return
+	}
+	if h.OnUploaded != nil {
+		h.OnUploaded(ctx, id)
 	}
 	v, err := h.dao.GetVideo(ctx, id)
 	if err != nil {

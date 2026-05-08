@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/a-h/templ"
 	"tangled.org/xeiaso.net/videosite/internal/alpinejs"
+	"tangled.org/xeiaso.net/videosite/internal/encoder"
 	"tangled.org/xeiaso.net/videosite/internal/htmx"
 	"tangled.org/xeiaso.net/videosite/internal/models"
 	"tangled.org/xeiaso.net/videosite/internal/upload"
@@ -22,16 +24,29 @@ type ServerConfig struct {
 	TigrisEndpoint    string
 	TigrisAccessKeyID string
 	TigrisSecretKey   string
+	TigrisIAMEndpoint string
+
+	VastAPIKey  string
+	VastAPIBase string
+
+	EncoderImage           string
+	EncoderDiskGB          int
+	EncoderPollInterval    time.Duration
+	EncoderJanitorInterval time.Duration
+	EncoderMaxDuration     time.Duration
+	EncoderMinReliability  float64
+	WebhookBaseURL         string
 }
 
 type Server struct {
-	cfg      ServerConfig
-	lg       *slog.Logger
-	dao      *models.DAO
-	uploader *upload.Handler
+	cfg          ServerConfig
+	lg           *slog.Logger
+	dao          *models.DAO
+	uploader     *upload.Handler
+	orchestrator *encoder.Orchestrator
 }
 
-func NewServer(cfg ServerConfig, lg *slog.Logger) (*Server, error) {
+func NewServer(ctx context.Context, cfg ServerConfig, lg *slog.Logger) (*Server, error) {
 	dao, err := models.New(cfg.DBLoc, lg.With("component", "dao"))
 	if err != nil {
 		return nil, fmt.Errorf("server: init dao: %w", err)
@@ -49,12 +64,47 @@ func NewServer(cfg ServerConfig, lg *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("server: init uploader: %w", err)
 	}
 
-	return &Server{
+	s := &Server{
 		cfg:      cfg,
 		lg:       lg,
 		dao:      dao,
 		uploader: uploader,
-	}, nil
+	}
+
+	if cfg.VastAPIKey != "" && cfg.WebhookBaseURL != "" {
+		iam, err := encoder.NewTigrisIAM(ctx, encoder.TigrisIAMConfig{
+			Endpoint:    cfg.TigrisIAMEndpoint,
+			AccessKeyID: cfg.TigrisAccessKeyID,
+			SecretKey:   cfg.TigrisSecretKey,
+			Bucket:      cfg.BucketName,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("server: init tigris iam: %w", err)
+		}
+		vast := encoder.NewVastClient(cfg.VastAPIKey, cfg.VastAPIBase, http.DefaultClient)
+		o := encoder.NewOrchestrator(encoder.Config{
+			DockerImage:     cfg.EncoderImage,
+			DiskGB:          cfg.EncoderDiskGB,
+			PollInterval:    cfg.EncoderPollInterval,
+			JanitorInterval: cfg.EncoderJanitorInterval,
+			MaxJobDuration:  cfg.EncoderMaxDuration,
+			MinReliability:  cfg.EncoderMinReliability,
+			WebhookBaseURL:  cfg.WebhookBaseURL,
+			Bucket:          cfg.BucketName,
+			StorageEndpoint: cfg.TigrisEndpoint,
+		}, dao, vast, iam, lg.With("component", "encoder"))
+		o.Start(ctx)
+		s.orchestrator = o
+		uploader.OnUploaded = func(ctx context.Context, videoID string) {
+			if _, err := dao.CreateEncodingJob(ctx, videoID); err != nil {
+				lg.Error("create encoding job", "err", err, "video_id", videoID)
+			}
+		}
+	} else {
+		lg.Warn("encoder orchestrator disabled — set VAST_API_KEY and WEBHOOK_BASE_URL to enable")
+	}
+
+	return s, nil
 }
 
 func (s *Server) Routes() *http.ServeMux {
@@ -63,6 +113,9 @@ func (s *Server) Routes() *http.ServeMux {
 	htmx.Mount(mux)
 	alpinejs.Mount(mux)
 	s.uploader.Mount(mux)
+	if s.orchestrator != nil {
+		s.orchestrator.Mount(mux)
+	}
 
 	mux.Handle("/static/", http.FileServerFS(web.Static))
 	mux.Handle("/{$}", s.indexPage())
