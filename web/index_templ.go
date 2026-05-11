@@ -9,9 +9,9 @@ import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
 import (
-	"tangled.org/xeiaso.net/videosite/internal/alpinejs"
-	"tangled.org/xeiaso.net/videosite/internal/htmx"
-	"tangled.org/xeiaso.net/videosite/internal/xess"
+	"github.com/tigrisdata-community/videosite/internal/alpinejs"
+	"github.com/tigrisdata-community/videosite/internal/htmx"
+	"github.com/tigrisdata-community/videosite/internal/xess"
 )
 
 func Navbar() templ.Component {
