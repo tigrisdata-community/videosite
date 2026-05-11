@@ -9,7 +9,7 @@ import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
 import (
-	"tangled.org/xeiaso.net/videosite/internal/models"
+	"github.com/tigrisdata-community/videosite/internal/models"
 )
 
 func Upload() templ.Component {

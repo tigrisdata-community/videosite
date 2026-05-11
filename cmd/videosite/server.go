@@ -9,13 +9,13 @@ import (
 
 	"github.com/a-h/templ"
 
-	"tangled.org/xeiaso.net/videosite/internal/alpinejs"
-	"tangled.org/xeiaso.net/videosite/internal/encoder"
-	"tangled.org/xeiaso.net/videosite/internal/htmx"
-	"tangled.org/xeiaso.net/videosite/internal/models"
-	"tangled.org/xeiaso.net/videosite/internal/upload"
-	"tangled.org/xeiaso.net/videosite/internal/xess"
-	"tangled.org/xeiaso.net/videosite/web"
+	"github.com/tigrisdata-community/videosite/internal/alpinejs"
+	"github.com/tigrisdata-community/videosite/internal/encoder"
+	"github.com/tigrisdata-community/videosite/internal/htmx"
+	"github.com/tigrisdata-community/videosite/internal/models"
+	"github.com/tigrisdata-community/videosite/internal/upload"
+	"github.com/tigrisdata-community/videosite/internal/xess"
+	"github.com/tigrisdata-community/videosite/web"
 )
 
 type ServerConfig struct {

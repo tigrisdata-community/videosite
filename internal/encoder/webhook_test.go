@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"tangled.org/xeiaso.net/videosite/internal/models"
+	"github.com/tigrisdata-community/videosite/internal/models"
 )
 
 func TestSignAndVerifyWebhook(t *testing.T) {

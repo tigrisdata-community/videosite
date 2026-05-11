@@ -4,7 +4,7 @@ import (
 	"embed"
 	"net/http"
 
-	"tangled.org/xeiaso.net/videosite/internal"
+	"github.com/tigrisdata-community/videosite/internal"
 )
 
 //go:generate go tool templ generate

@@ -1,4 +1,4 @@
-module tangled.org/xeiaso.net/videosite
+module github.com/tigrisdata-community/videosite
 
 go 1.26.2
 

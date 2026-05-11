@@ -24,7 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"tangled.org/xeiaso.net/videosite/internal/encoder"
+	"github.com/tigrisdata-community/videosite/internal/encoder"
 )
 
 type env struct {

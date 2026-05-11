@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"tangled.org/xeiaso.net/videosite/internal/models"
+	"github.com/tigrisdata-community/videosite/internal/models"
 )
 
 // Orchestrator owns the encoding-job lifecycle. A single ticker drives both

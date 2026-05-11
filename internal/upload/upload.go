@@ -30,8 +30,8 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/google/uuid"
 
-	"tangled.org/xeiaso.net/videosite/internal/models"
-	"tangled.org/xeiaso.net/videosite/web"
+	"github.com/tigrisdata-community/videosite/internal/models"
+	"github.com/tigrisdata-community/videosite/web"
 )
 
 type Action string

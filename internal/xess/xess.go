@@ -9,7 +9,7 @@ import (
 	"runtime/debug"
 
 	"github.com/a-h/templ"
-	"tangled.org/xeiaso.net/videosite/internal"
+	"github.com/tigrisdata-community/videosite/internal"
 )
 
 //go:generate go tool templ generate
