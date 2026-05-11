@@ -1,0 +1,34 @@
+apiVersion: x.within.website/v1
+kind: App
+metadata:
+  name: videosite-dev
+
+spec:
+  image: ghcr.io/tigrisdata-community/videosite/www
+  autoUpdate: true
+  replicas: 1
+
+  storage:
+    enabled: true
+    path: "/data/"
+    size: 4Gi
+
+  env:
+    - name: ENCODER_DOCKER_IMAGE
+      value: "ghcr.io/tigrisdata-community/videosite/encoder:latest"
+    - name: WEBHOOK_BASE_URL
+      value: "https://videosite-dev.automuse.art"
+    - name: DB_LOC
+      value: "/data/videosite.db"
+
+  secrets:
+    - name: tigris-creds
+      itemPath: vaults/lc5zo4zjz3if3mkeuhufjmgmui/items/5z5wgfh7ezxt3bd5fgihtxc6aa
+      environment: true
+    - name: vast-ai-api-key
+      itemPath: vaults/lc5zo4zjz3if3mkeuhufjmgmui/items/labxn77cywxwoncjuhr2og3anm
+      environment: true
+
+  ingress:
+    enabled: true
+    host: videosite-dev.automuse.art

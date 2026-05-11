@@ -13,6 +13,7 @@ type EncodingJob struct {
 	Status            EncodingJobStatus
 	VastInstanceID    int
 	TigrisAccessKeyID string
+	TigrisPolicyARN   string
 	WebhookSecret     string
 	StartedAt         *time.Time
 	CompletedAt       *time.Time

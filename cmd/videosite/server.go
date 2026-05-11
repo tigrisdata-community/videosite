@@ -91,6 +91,7 @@ func NewServer(ctx context.Context, cfg ServerConfig, lg *slog.Logger) (*Server,
 				lg.Error("create encoding job", "err", err, "video_id", videoID)
 			}
 		}
+		lg.Info("started vast.ai encoder orchestrator")
 	} else {
 		lg.Warn("encoder orchestrator disabled — set VAST_API_KEY and WEBHOOK_BASE_URL to enable")
 	}

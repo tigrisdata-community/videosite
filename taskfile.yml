@@ -21,7 +21,22 @@ tasks:
     cmds:
       - sqlite3 ./var/data.db
 
-  encoder:image:
+  docker:
+    desc: Build and push both Docker images
+    deps:
+      - "docker:www"
+      - "docker:encoder"
+
+  docker:www:
+    desc: Build and push the www Docker image
+    vars:
+      TAG: '{{.TAG | default "latest"}}'
+      REGISTRY: '{{.REGISTRY | default "ghcr.io/tigrisdata-community/videosite"}}'
+    cmds:
+      - docker build -f docker/www.Dockerfile --platform linux/amd64 -t {{.REGISTRY}}/www:{{.TAG}} .
+      - docker push {{.REGISTRY}}/www:{{.TAG}}
+
+  docker:encoder:
     desc: Build and push the encoder Docker image
     vars:
       TAG: '{{.TAG | default "latest"}}'

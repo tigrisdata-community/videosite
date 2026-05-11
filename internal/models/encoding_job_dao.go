@@ -84,11 +84,12 @@ func (d *DAO) ClaimPendingEncodingJob(ctx context.Context) (*EncodingJob, error)
 	return job, nil
 }
 
-func (d *DAO) MarkEncodingJobRunning(ctx context.Context, id string, vastInstanceID int, accessKeyID string, dph float64) error {
+func (d *DAO) MarkEncodingJobRunning(ctx context.Context, id string, vastInstanceID int, accessKeyID, policyARN string, dph float64) error {
 	now := time.Now()
 	return d.transitionEncodingJob(ctx, id, EncodingJobLaunching, EncodingJobRunning, map[string]any{
 		"vast_instance_id":     vastInstanceID,
 		"tigris_access_key_id": accessKeyID,
+		"tigris_policy_arn":    policyARN,
 		"dph_total":            dph,
 		"started_at":           &now,
 	})

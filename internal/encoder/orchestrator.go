@@ -108,7 +108,7 @@ func (o *Orchestrator) claimAndLaunchOne(ctx context.Context) error {
 
 	offer, err := o.findOffer(ctx)
 	if err != nil {
-		_ = o.iam.DeleteKey(ctx, scoped.AccessKeyID)
+		_ = o.iam.DeleteScopedKey(ctx, scoped.AccessKeyID, scoped.PolicyARN)
 		o.failJob(ctx, job, err.Error())
 		return nil
 	}
@@ -122,15 +122,15 @@ func (o *Orchestrator) claimAndLaunchOne(ctx context.Context) error {
 		Label:   "videosite-encoder/" + job.ID,
 	})
 	if err != nil {
-		_ = o.iam.DeleteKey(ctx, scoped.AccessKeyID)
+		_ = o.iam.DeleteScopedKey(ctx, scoped.AccessKeyID, scoped.PolicyARN)
 		o.failJob(ctx, job, fmt.Sprintf("mint: %v", err))
 		return nil
 	}
 
-	if err := o.dao.MarkEncodingJobRunning(ctx, job.ID, instanceID, scoped.AccessKeyID, offer.DphTotal); err != nil {
+	if err := o.dao.MarkEncodingJobRunning(ctx, job.ID, instanceID, scoped.AccessKeyID, scoped.PolicyARN, offer.DphTotal); err != nil {
 		// Minted but couldn't record — slay before anyone gets billed.
 		_ = o.vast.Destroy(ctx, instanceID)
-		_ = o.iam.DeleteKey(ctx, scoped.AccessKeyID)
+		_ = o.iam.DeleteScopedKey(ctx, scoped.AccessKeyID, scoped.PolicyARN)
 		return fmt.Errorf("mark running: %w", err)
 	}
 	if err := o.dao.MarkVideoEncoding(ctx, video.ID); err != nil && !errors.Is(err, models.ErrConflict) {
@@ -251,7 +251,7 @@ func (o *Orchestrator) completeJob(ctx context.Context, job *models.EncodingJob,
 		}
 	}
 	if job.TigrisAccessKeyID != "" {
-		if err := o.iam.DeleteKey(ctx, job.TigrisAccessKeyID); err != nil {
+		if err := o.iam.DeleteScopedKey(ctx, job.TigrisAccessKeyID, job.TigrisPolicyARN); err != nil {
 			o.log.Warn("delete iam key", "err", err, "access_key_id", job.TigrisAccessKeyID)
 		}
 	}

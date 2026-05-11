@@ -14,4 +14,4 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
 
 FROM roflcoopter/amd64-cuda-ffmpeg:20260511143422
 COPY --from=build /out/videosite-encoder /usr/local/bin/videosite-encoder
-ENTRYPOINT ["/usr/local/bin/videosite-encoder"]
+CMD ["/usr/local/bin/videosite-encoder"]

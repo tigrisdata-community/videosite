@@ -13,10 +13,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 )
 
-// TigrisIAM is a thin wrapper around the AWS IAM SDK pointed at Tigris's IAM
-// endpoint. Tigris doesn't have IAM Users in the AWS sense — policies attach
-// directly to an access key, and the SDK's UserName field is reused as the
-// access-key-id when calling PutUserPolicy / DeleteAccessKey.
+// TigrisIAM wraps the AWS IAM SDK pointed at Tigris's IAM endpoint. Tigris
+// doesn't have IAM Users in the AWS sense — policies attach to access keys,
+// and the SDK's UserName field is reused as the access-key-id. Tigris also
+// does NOT support inline policies (PutUserPolicy returns 501), so the
+// flow is CreatePolicy → AttachUserPolicy and the policy ARN has to be
+// tracked for cleanup.
 type TigrisIAM struct {
 	client *iam.Client
 	bucket string
@@ -56,11 +58,13 @@ func NewTigrisIAM(ctx context.Context, cfg TigrisIAMConfig) (*TigrisIAM, error) 
 type ScopedKey struct {
 	AccessKeyID string
 	SecretKey   string
+	PolicyARN   string
 }
 
-// CreateScopedKey mints a fresh access key and attaches an inline policy that
-// allows GetObject on exactly sourceKey and PutObject under destPrefix.
-// destPrefix should end with a slash.
+// CreateScopedKey mints a fresh access key, creates a managed policy that
+// allows GetObject on exactly sourceKey and PutObject under destPrefix, and
+// attaches the policy to the key. destPrefix should end with a slash. If
+// any step fails the partial work is best-effort rolled back.
 func (t *TigrisIAM) CreateScopedKey(ctx context.Context, sourceKey, destPrefix string) (*ScopedKey, error) {
 	if !strings.HasSuffix(destPrefix, "/") {
 		destPrefix += "/"
@@ -93,45 +97,83 @@ func (t *TigrisIAM) CreateScopedKey(ctx context.Context, sourceKey, destPrefix s
 		return nil, fmt.Errorf("encoder/iam: marshal policy: %w", err)
 	}
 
-	_, err = t.client.PutUserPolicy(ctx, &iam.PutUserPolicyInput{
-		UserName:       aws.String(keyID),
-		PolicyName:     aws.String("videosite-encoder-job"),
+	// Policy name is keyed off the access key id so it's unique and so
+	// orphaned policies can be traced back to a specific job.
+	policyName := "videosite-encoder-" + keyID
+	createOut, err := t.client.CreatePolicy(ctx, &iam.CreatePolicyInput{
+		PolicyName:     aws.String(policyName),
 		PolicyDocument: aws.String(string(policyJSON)),
 	})
 	if err != nil {
-		// Best-effort cleanup of the orphaned key.
-		_, _ = t.client.DeleteAccessKey(ctx, &iam.DeleteAccessKeyInput{
-			AccessKeyId: aws.String(keyID),
-			UserName:    aws.String(keyID),
-		})
-		return nil, fmt.Errorf("encoder/iam: put user policy: %w", err)
+		t.deleteAccessKey(ctx, keyID)
+		return nil, fmt.Errorf("encoder/iam: create policy: %w", err)
 	}
+	policyARN := aws.ToString(createOut.Policy.Arn)
 
-	return &ScopedKey{AccessKeyID: keyID, SecretKey: secret}, nil
-}
-
-// DeleteKey removes the key. Idempotent — already-gone keys aren't an error.
-func (t *TigrisIAM) DeleteKey(ctx context.Context, accessKeyID string) error {
-	if accessKeyID == "" {
-		return nil
-	}
-	// Drop the inline policy first so the key truly stops working even if
-	// DeleteAccessKey 404s for some reason.
-	_, _ = t.client.DeleteUserPolicy(ctx, &iam.DeleteUserPolicyInput{
-		UserName:   aws.String(accessKeyID),
-		PolicyName: aws.String("videosite-encoder-job"),
-	})
-	_, err := t.client.DeleteAccessKey(ctx, &iam.DeleteAccessKeyInput{
-		AccessKeyId: aws.String(accessKeyID),
-		UserName:    aws.String(accessKeyID),
+	_, err = t.client.AttachUserPolicy(ctx, &iam.AttachUserPolicyInput{
+		UserName:  aws.String(keyID),
+		PolicyArn: aws.String(policyARN),
 	})
 	if err != nil {
-		// Treat NoSuchEntity as already-gone.
-		var nse interface{ ErrorCode() string }
-		if errors.As(err, &nse) && nse.ErrorCode() == "NoSuchEntity" {
-			return nil
+		t.deletePolicy(ctx, policyARN)
+		t.deleteAccessKey(ctx, keyID)
+		return nil, fmt.Errorf("encoder/iam: attach policy: %w", err)
+	}
+
+	return &ScopedKey{AccessKeyID: keyID, SecretKey: secret, PolicyARN: policyARN}, nil
+}
+
+// DeleteScopedKey tears down everything CreateScopedKey created. Each step
+// is idempotent and best-effort — already-gone resources are not errors.
+func (t *TigrisIAM) DeleteScopedKey(ctx context.Context, accessKeyID, policyARN string) error {
+	var firstErr error
+	if accessKeyID != "" && policyARN != "" {
+		_, err := t.client.DetachUserPolicy(ctx, &iam.DetachUserPolicyInput{
+			UserName:  aws.String(accessKeyID),
+			PolicyArn: aws.String(policyARN),
+		})
+		if err != nil && !isNoSuchEntity(err) {
+			firstErr = fmt.Errorf("detach policy: %w", err)
 		}
-		return fmt.Errorf("encoder/iam: delete access key %q: %w", accessKeyID, err)
+	}
+	if accessKeyID != "" {
+		if err := t.deleteAccessKey(ctx, accessKeyID); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if policyARN != "" {
+		if err := t.deletePolicy(ctx, policyARN); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (t *TigrisIAM) deleteAccessKey(ctx context.Context, keyID string) error {
+	_, err := t.client.DeleteAccessKey(ctx, &iam.DeleteAccessKeyInput{
+		AccessKeyId: aws.String(keyID),
+		UserName:    aws.String(keyID),
+	})
+	if err != nil && !isNoSuchEntity(err) {
+		return fmt.Errorf("encoder/iam: delete access key %q: %w", keyID, err)
 	}
 	return nil
+}
+
+func (t *TigrisIAM) deletePolicy(ctx context.Context, arn string) error {
+	_, err := t.client.DeletePolicy(ctx, &iam.DeletePolicyInput{
+		PolicyArn: aws.String(arn),
+	})
+	if err != nil && !isNoSuchEntity(err) {
+		return fmt.Errorf("encoder/iam: delete policy %q: %w", arn, err)
+	}
+	return nil
+}
+
+func isNoSuchEntity(err error) bool {
+	var apiErr interface{ ErrorCode() string }
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchEntity" {
+		return true
+	}
+	return false
 }
