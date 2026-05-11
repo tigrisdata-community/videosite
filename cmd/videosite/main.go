@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/facebookgo/flagenv"
+	xslog "github.com/tigrisdata-community/videosite/internal/slog"
 
 	_ "github.com/joho/godotenv/autoload"
 )
@@ -37,6 +38,7 @@ var (
 func main() {
 	flagenv.Parse()
 	flag.Parse()
+	xslog.Init()
 
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
