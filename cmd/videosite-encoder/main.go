@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/tigrisdata-community/videosite/internal/encoder"
+	xslog "github.com/tigrisdata-community/videosite/internal/slog"
 )
 
 type env struct {
@@ -68,8 +70,9 @@ func loadEnv() (env, error) {
 }
 
 func main() {
-	lg := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	slog.SetDefault(lg)
+	flag.Parse()
+	xslog.Init()
+	lg := slog.Default()
 
 	e, err := loadEnv()
 	if err != nil {
@@ -77,6 +80,7 @@ func main() {
 		os.Exit(2)
 	}
 	lg = lg.With("job_id", e.JobID, "video_id", e.VideoID)
+	slog.SetDefault(lg)
 
 	ctx := context.Background()
 	if err := run(ctx, lg, e); err != nil {
