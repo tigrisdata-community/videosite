@@ -33,7 +33,7 @@ tasks:
       TAG: '{{.TAG | default "latest"}}'
       REGISTRY: '{{.REGISTRY | default "ghcr.io/tigrisdata-community/videosite"}}'
     cmds:
-      - docker build -f docker/www.Dockerfile --platform linux/amd64 -t {{.REGISTRY}}/www:{{.TAG}} .
+      - docker build --quiet -f docker/www.Dockerfile --platform linux/amd64 -t {{.REGISTRY}}/www:{{.TAG}} .
       - docker push {{.REGISTRY}}/www:{{.TAG}}
 
   docker:encoder:
@@ -42,5 +42,5 @@ tasks:
       TAG: '{{.TAG | default "latest"}}'
       REGISTRY: '{{.REGISTRY | default "ghcr.io/tigrisdata-community/videosite"}}'
     cmds:
-      - docker build -f docker/encoder.Dockerfile --platform linux/amd64 -t {{.REGISTRY}}/encoder:{{.TAG}} .
+      - docker build --quiet -f docker/encoder.Dockerfile --platform linux/amd64 -t {{.REGISTRY}}/encoder:{{.TAG}} .
       - docker push {{.REGISTRY}}/encoder:{{.TAG}}
