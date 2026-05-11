@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"syscall"
-	"time"
 
 	"github.com/facebookgo/flagenv"
 
@@ -31,13 +30,7 @@ var (
 	vastAPIKey  = flag.String("vast-api-key", "", "Vast.ai API key")
 	vastAPIBase = flag.String("vast-api-base", "https://console.vast.ai", "Vast.ai API base URL")
 
-	encoderImage           = flag.String("encoder-docker-image", "reg.xeiaso.net/xeserv/videosite-encoder:latest", "Docker image for the encoder container")
-	encoderDiskGB          = flag.Int("encoder-disk-gb", 32, "Disk size in GB for the encoder container")
-	encoderPollInterval    = flag.Duration("encoder-poll-interval", 5*time.Second, "How often to claim a pending encoding job")
-	encoderJanitorInterval = flag.Duration("encoder-janitor-interval", 30*time.Second, "How often to reconcile running encoding jobs")
-	encoderMaxDuration     = flag.Duration("encoder-max-duration", 2*time.Hour, "Force-fail running encoding jobs older than this")
-	encoderMinReliability  = flag.Float64("encoder-min-reliability", 0.95, "Minimum vast.ai host reliability score")
-
+	encoderImage   = flag.String("encoder-docker-image", "ghcr.io/tigrisdata-community/videosite/encoder:latest", "Docker image for the encoder container")
 	webhookBaseURL = flag.String("webhook-base-url", "", "Public base URL the encoder posts callbacks to (e.g. https://videosite.example)")
 )
 
@@ -63,22 +56,17 @@ func main() {
 	defer cancel()
 
 	srv, err := NewServer(ctx, ServerConfig{
-		BucketName:             *bucketName,
-		BucketURLBase:          *bucketURLBase,
-		DBLoc:                  *dbLoc,
-		TigrisEndpoint:         *tigrisEndpoint,
-		TigrisAccessKeyID:      *tigrisAccessKeyID,
-		TigrisSecretKey:        *tigrisSecretKey,
-		TigrisIAMEndpoint:      *tigrisIAMEndpoint,
-		VastAPIKey:             *vastAPIKey,
-		VastAPIBase:            *vastAPIBase,
-		EncoderImage:           *encoderImage,
-		EncoderDiskGB:          *encoderDiskGB,
-		EncoderPollInterval:    *encoderPollInterval,
-		EncoderJanitorInterval: *encoderJanitorInterval,
-		EncoderMaxDuration:     *encoderMaxDuration,
-		EncoderMinReliability:  *encoderMinReliability,
-		WebhookBaseURL:         *webhookBaseURL,
+		BucketName:        *bucketName,
+		BucketURLBase:     *bucketURLBase,
+		DBLoc:             *dbLoc,
+		TigrisEndpoint:    *tigrisEndpoint,
+		TigrisAccessKeyID: *tigrisAccessKeyID,
+		TigrisSecretKey:   *tigrisSecretKey,
+		TigrisIAMEndpoint: *tigrisIAMEndpoint,
+		VastAPIKey:        *vastAPIKey,
+		VastAPIBase:       *vastAPIBase,
+		EncoderImage:      *encoderImage,
+		WebhookBaseURL:    *webhookBaseURL,
 	}, lg)
 	if err != nil {
 		log.Fatal(err)

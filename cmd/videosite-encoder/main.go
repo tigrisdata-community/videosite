@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
@@ -40,7 +41,14 @@ type env struct {
 }
 
 func loadEnv() (env, error) {
-	get := func(k string) string { return strings.TrimSpace(os.Getenv(k)) }
+	var missing []string
+	get := func(k string) string {
+		v := os.Getenv(k)
+		if v == "" {
+			missing = append(missing, k)
+		}
+		return v
+	}
 	e := env{
 		JobID:         get("JOB_ID"),
 		VideoID:       get("VIDEO_ID"),
@@ -52,23 +60,6 @@ func loadEnv() (env, error) {
 		SecretKey:     get("AWS_SECRET_ACCESS_KEY"),
 		WebhookURL:    get("WEBHOOK_URL"),
 		WebhookSecret: get("WEBHOOK_SECRET"),
-	}
-	missing := []string{}
-	for k, v := range map[string]string{
-		"JOB_ID":                e.JobID,
-		"VIDEO_ID":              e.VideoID,
-		"SOURCE_BUCKET":         e.SourceBucket,
-		"SOURCE_KEY":            e.SourceKey,
-		"DEST_PREFIX":           e.DestPrefix,
-		"AWS_ENDPOINT_URL_S3":   e.S3Endpoint,
-		"AWS_ACCESS_KEY_ID":     e.AccessKey,
-		"AWS_SECRET_ACCESS_KEY": e.SecretKey,
-		"WEBHOOK_URL":           e.WebhookURL,
-		"WEBHOOK_SECRET":        e.WebhookSecret,
-	} {
-		if v == "" {
-			missing = append(missing, k)
-		}
 	}
 	if len(missing) > 0 {
 		return e, fmt.Errorf("missing env vars: %s", strings.Join(missing, ", "))
@@ -204,11 +195,15 @@ func uploadDir(ctx context.Context, c *s3.Client, bucket, prefix, dir string) (i
 			return err
 		}
 		defer f.Close()
+		ctype := mime.TypeByExtension(filepath.Ext(path))
+		if ctype == "" {
+			ctype = "application/octet-stream"
+		}
 		_, err = c.PutObject(ctx, &s3.PutObjectInput{
 			Bucket:      aws.String(bucket),
 			Key:         aws.String(key),
 			Body:        f,
-			ContentType: aws.String(encoder.ContentTypeFor(filepath.Base(path))),
+			ContentType: aws.String(ctype),
 		})
 		if err != nil {
 			return fmt.Errorf("put %q: %w", key, err)

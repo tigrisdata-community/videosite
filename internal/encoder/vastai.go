@@ -46,15 +46,15 @@ type Offer struct {
 	Reliability2  float64 `json:"reliability2"`
 }
 
-// LaunchConfig is the body shape for PUT /asks/{id}/.
+// LaunchConfig is the body shape for PUT /asks/{id}/. ClientID and Runtype
+// are fixed to the values vast-python uses and aren't part of the caller's
+// vocabulary — the wire form is hand-built in Mint instead.
 type LaunchConfig struct {
-	Image    string            `json:"image"`
-	Env      map[string]string `json:"env"`
-	Disk     int               `json:"disk"`
-	Onstart  string            `json:"onstart"`
-	Runtype  string            `json:"runtype"`
-	Label    string            `json:"label"`
-	ClientID string            `json:"client_id"`
+	Image   string            `json:"image"`
+	Env     map[string]string `json:"env"`
+	Disk    int               `json:"disk"`
+	Onstart string            `json:"onstart"`
+	Label   string            `json:"label"`
 }
 
 // Instance is the subset of fields we read when polling.
@@ -95,9 +95,8 @@ func (c *VastClient) do(ctx context.Context, method, path string, body any) ([]b
 	return out, resp.StatusCode, nil
 }
 
-// SearchOffers calls POST /api/v0/bundles/. The query map is the operator-
-// based filter object that vast-python uses; e.g.
-// {"verified": {"eq": true}, "gpu_name": {"in": [...]}}.
+// SearchOffers calls POST /api/v0/bundles/. The query is the operator-based
+// filter object documented in vast-python (e.g. {"gpu_name": {"in": [...]}}).
 func (c *VastClient) SearchOffers(ctx context.Context, query map[string]any) ([]Offer, error) {
 	body, status, err := c.do(ctx, http.MethodPost, "/api/v0/bundles/", query)
 	if err != nil {
@@ -106,33 +105,28 @@ func (c *VastClient) SearchOffers(ctx context.Context, query map[string]any) ([]
 	if status >= 400 {
 		return nil, fmt.Errorf("encoder/vastai: search offers: %d: %s", status, body)
 	}
-
-	// The bundles endpoint historically returned {"offers": [...]} but newer
-	// responses return either that or a bare array. Try both.
-	var wrapped struct {
+	var resp struct {
 		Offers []Offer `json:"offers"`
 	}
-	if err := json.Unmarshal(body, &wrapped); err == nil && wrapped.Offers != nil {
-		return wrapped.Offers, nil
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("encoder/vastai: search offers: parse: %w", err)
 	}
-	var bare []Offer
-	if err := json.Unmarshal(body, &bare); err == nil {
-		return bare, nil
-	}
-	return nil, fmt.Errorf("encoder/vastai: search offers: unexpected body: %s", body)
+	return resp.Offers, nil
 }
 
-// Mint accepts an offer and creates an instance. Returns the new instance ID
-// and the dollars-per-hour total at launch time (best-effort; 0 if missing).
+// Mint accepts an offer and creates an instance. Returns the new instance ID.
 func (c *VastClient) Mint(ctx context.Context, askContractID int, cfg LaunchConfig) (int, error) {
-	if cfg.ClientID == "" {
-		cfg.ClientID = "me"
-	}
-	if cfg.Runtype == "" {
-		cfg.Runtype = "args"
+	wire := map[string]any{
+		"client_id": "me",
+		"runtype":   "args",
+		"image":     cfg.Image,
+		"env":       cfg.Env,
+		"disk":      cfg.Disk,
+		"onstart":   cfg.Onstart,
+		"label":     cfg.Label,
 	}
 	body, status, err := c.do(ctx, http.MethodPut,
-		fmt.Sprintf("/api/v0/asks/%d/", askContractID), cfg)
+		fmt.Sprintf("/api/v0/asks/%d/", askContractID), wire)
 	if err != nil {
 		return 0, err
 	}
@@ -153,7 +147,8 @@ func (c *VastClient) Mint(ctx context.Context, askContractID int, cfg LaunchConf
 	return resp.NewContract, nil
 }
 
-// GetInstance fetches an instance by id.
+// GetInstance fetches an instance by id. Vast wraps the result in
+// {"instances": {...}} on this endpoint.
 func (c *VastClient) GetInstance(ctx context.Context, id int) (*Instance, error) {
 	body, status, err := c.do(ctx, http.MethodGet,
 		fmt.Sprintf("/api/v0/instances/%d/", id), nil)
@@ -166,18 +161,13 @@ func (c *VastClient) GetInstance(ctx context.Context, id int) (*Instance, error)
 	if status >= 400 {
 		return nil, fmt.Errorf("encoder/vastai: get instance %d: %d: %s", id, status, body)
 	}
-	// Vast wraps the instance in {"instances": {...}} on this endpoint.
-	var wrapped struct {
+	var resp struct {
 		Instances Instance `json:"instances"`
 	}
-	if err := json.Unmarshal(body, &wrapped); err == nil && wrapped.Instances.ID != 0 {
-		return &wrapped.Instances, nil
-	}
-	var bare Instance
-	if err := json.Unmarshal(body, &bare); err != nil {
+	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("encoder/vastai: get instance %d: parse: %w", id, err)
 	}
-	return &bare, nil
+	return &resp.Instances, nil
 }
 
 // ErrInstanceGone is returned when GetInstance / Destroy hit a 404. Callers

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"tangled.org/xeiaso.net/videosite/internal/models"
@@ -56,10 +57,32 @@ func TestWebhookHandler(t *testing.T) {
 		t.Fatalf("mark video encoding: %v", err)
 	}
 
+	// Stub server for both vast.ai (DELETE /instances/99/) and Tigris IAM
+	// (POST /, AWS query API). 200/204 for everything we care about so the
+	// synchronous cleanup path in completeJob doesn't error.
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v0/instances/"):
+			w.WriteHeader(http.StatusNoContent)
+		default: // IAM AWS query API responses are XML; empty 200 is fine.
+			w.Header().Set("Content-Type", "text/xml")
+			_, _ = io.WriteString(w, `<Response/>`)
+		}
+	}))
+	defer stub.Close()
+
+	iam, err := NewTigrisIAM(ctx, TigrisIAMConfig{
+		Endpoint: stub.URL, AccessKeyID: "k", SecretKey: "s", Bucket: "b",
+	})
+	if err != nil {
+		t.Fatalf("iam: %v", err)
+	}
+
 	o := &Orchestrator{
 		cfg:  Config{},
 		dao:  dao,
-		vast: NewVastClient("k", "http://example.invalid", http.DefaultClient),
+		vast: NewVastClient("k", stub.URL, stub.Client()),
+		iam:  iam,
 		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
@@ -117,7 +140,7 @@ func TestWebhookHandler(t *testing.T) {
 				t.Fatalf("req: %v", err)
 			}
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set(webhookSigHeader, SignWebhookBody(secret, raw))
+			req.Header.Set(webhookSigHdr, SignWebhookBody(secret, raw))
 			resp, err := srv.Client().Do(req)
 			if err != nil {
 				t.Fatalf("do: %v", err)
@@ -130,8 +153,7 @@ func TestWebhookHandler(t *testing.T) {
 		})
 	}
 
-	// After a successful webhook the EncodingJob should be succeeded and the
-	// Video should be ready.
+	// After the successful webhook, EncodingJob → succeeded and Video → ready.
 	got, err := dao.GetEncodingJob(ctx, job.ID)
 	if err != nil {
 		t.Fatalf("get job: %v", err)

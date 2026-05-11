@@ -94,12 +94,12 @@ func TestVastClient_Mint(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Errorf("auth header = %q, want Bearer test-key", got)
 		}
-		var body LaunchConfig
+		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decode body: %v", err)
 		}
-		if body.ClientID != "me" || body.Runtype != "args" {
-			t.Errorf("expected defaults filled in: %+v", body)
+		if body["client_id"] != "me" || body["runtype"] != "args" {
+			t.Errorf("expected hard-coded client_id/runtype: %+v", body)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"success": true, "new_contract": 12345,

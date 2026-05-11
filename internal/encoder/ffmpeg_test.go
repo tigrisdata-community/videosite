@@ -31,22 +31,6 @@ func TestFFmpegArgs(t *testing.T) {
 	}
 }
 
-func TestContentTypeFor(t *testing.T) {
-	tests := map[string]string{
-		"manifest.mpd":            "application/dash+xml",
-		"chunk-stream0-00001.m4s": "video/iso.segment",
-		"init-stream0.mp4":        "video/mp4",
-		"random.bin":              "application/octet-stream",
-	}
-	for in, want := range tests {
-		t.Run(in, func(t *testing.T) {
-			if got := ContentTypeFor(in); got != want {
-				t.Errorf("got %q, want %q", got, want)
-			}
-		})
-	}
-}
-
 func containsAdjacent(haystack, needle []string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if slices.Equal(haystack[i:i+len(needle)], needle) {

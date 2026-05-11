@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/a-h/templ"
+
 	"tangled.org/xeiaso.net/videosite/internal/alpinejs"
 	"tangled.org/xeiaso.net/videosite/internal/encoder"
 	"tangled.org/xeiaso.net/videosite/internal/htmx"
@@ -29,13 +30,8 @@ type ServerConfig struct {
 	VastAPIKey  string
 	VastAPIBase string
 
-	EncoderImage           string
-	EncoderDiskGB          int
-	EncoderPollInterval    time.Duration
-	EncoderJanitorInterval time.Duration
-	EncoderMaxDuration     time.Duration
-	EncoderMinReliability  float64
-	WebhookBaseURL         string
+	EncoderImage   string
+	WebhookBaseURL string
 }
 
 type Server struct {
@@ -84,11 +80,6 @@ func NewServer(ctx context.Context, cfg ServerConfig, lg *slog.Logger) (*Server,
 		vast := encoder.NewVastClient(cfg.VastAPIKey, cfg.VastAPIBase, http.DefaultClient)
 		o := encoder.NewOrchestrator(encoder.Config{
 			DockerImage:     cfg.EncoderImage,
-			DiskGB:          cfg.EncoderDiskGB,
-			PollInterval:    cfg.EncoderPollInterval,
-			JanitorInterval: cfg.EncoderJanitorInterval,
-			MaxJobDuration:  cfg.EncoderMaxDuration,
-			MinReliability:  cfg.EncoderMinReliability,
 			WebhookBaseURL:  cfg.WebhookBaseURL,
 			Bucket:          cfg.BucketName,
 			StorageEndpoint: cfg.TigrisEndpoint,

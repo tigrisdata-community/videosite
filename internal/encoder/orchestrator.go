@@ -2,8 +2,13 @@ package encoder
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,46 +17,9 @@ import (
 	"tangled.org/xeiaso.net/videosite/internal/models"
 )
 
-// Config tunes the orchestrator. All fields have sensible zero-value
-// fallbacks except the credentials.
-type Config struct {
-	DockerImage     string
-	DiskGB          int
-	PollInterval    time.Duration
-	JanitorInterval time.Duration
-	MaxJobDuration  time.Duration
-	WebhookBaseURL  string // e.g. https://videosite.example.com — no trailing slash
-	GpuPrefs        []string
-	MinReliability  float64
-
-	Bucket          string
-	StorageEndpoint string
-}
-
-func (c *Config) defaults() {
-	if c.DiskGB == 0 {
-		c.DiskGB = 32
-	}
-	if c.PollInterval == 0 {
-		c.PollInterval = 5 * time.Second
-	}
-	if c.JanitorInterval == 0 {
-		c.JanitorInterval = 30 * time.Second
-	}
-	if c.MaxJobDuration == 0 {
-		c.MaxJobDuration = 2 * time.Hour
-	}
-	if len(c.GpuPrefs) == 0 {
-		c.GpuPrefs = []string{"RTX_3090", "RTX_4090"}
-	}
-	if c.MinReliability == 0 {
-		c.MinReliability = 0.95
-	}
-}
-
-// Orchestrator owns the encoding-job lifecycle. It runs two goroutines: a
-// pending-claimer that picks up new jobs and launches Vast.ai instances, and
-// a janitor that reconciles instances whose encoders never reported back.
+// Orchestrator owns the encoding-job lifecycle. A single ticker drives both
+// halves of the work: claim one pending job, reconcile any non-terminal
+// jobs whose Vast.ai instance has exited without firing the webhook.
 type Orchestrator struct {
 	cfg  Config
 	dao  *models.DAO
@@ -60,37 +28,62 @@ type Orchestrator struct {
 	log  *slog.Logger
 }
 
+// Config is what the server passes in. Tunables not in here are constants
+// (tickInterval, maxJobDuration, gpuPrefs, minReliability) — promote them to
+// fields the day someone actually wants to override one.
+type Config struct {
+	DockerImage     string
+	WebhookBaseURL  string // public base URL the encoder POSTs callbacks to
+	Bucket          string
+	StorageEndpoint string
+}
+
+const (
+	tickInterval   = 10 * time.Second
+	maxJobDuration = 2 * time.Hour
+	minReliability = 0.95
+	encoderDiskGB  = 32
+	webhookSigHdr  = "X-Webhook-Signature"
+)
+
+var gpuPrefs = []string{"RTX_3090", "RTX_4090"}
+
 func NewOrchestrator(cfg Config, dao *models.DAO, vast *VastClient, iam *TigrisIAM, lg *slog.Logger) *Orchestrator {
-	cfg.defaults()
 	return &Orchestrator{cfg: cfg, dao: dao, vast: vast, iam: iam, log: lg}
 }
 
-// Mount registers the webhook route. Call this from the server's Routes().
 func (o *Orchestrator) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/encode-callback", o.handleWebhook)
 }
 
-// Start kicks off the background goroutines. They exit when ctx is cancelled.
+// Start kicks off the background loop. It exits when ctx is cancelled.
 func (o *Orchestrator) Start(ctx context.Context) {
-	go o.pendingLoop(ctx)
-	go o.janitorLoop(ctx)
+	go o.loop(ctx)
 }
 
-func (o *Orchestrator) pendingLoop(ctx context.Context) {
-	t := time.NewTicker(o.cfg.PollInterval)
+func (o *Orchestrator) loop(ctx context.Context) {
+	t := time.NewTicker(tickInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := o.claimAndLaunchOne(ctx); err != nil && !errors.Is(err, models.ErrNoPending) {
-				o.log.Error("pending loop", "err", err)
-			}
+			o.tick(ctx)
 		}
 	}
 }
 
+func (o *Orchestrator) tick(ctx context.Context) {
+	if err := o.claimAndLaunchOne(ctx); err != nil && !errors.Is(err, models.ErrNoPending) {
+		o.log.Error("claim/launch", "err", err)
+	}
+	o.reconcile(ctx)
+}
+
+// claimAndLaunchOne is the saga: claim → IAM key → search → mint → record.
+// On any step's failure we roll back the work we've done so far and mark the
+// job failed. Returns ErrNoPending when nothing's waiting.
 func (o *Orchestrator) claimAndLaunchOne(ctx context.Context) error {
 	job, err := o.dao.ClaimPendingEncodingJob(ctx)
 	if err != nil {
@@ -113,23 +106,55 @@ func (o *Orchestrator) claimAndLaunchOne(ctx context.Context) error {
 		return nil
 	}
 
-	offers, err := o.vast.SearchOffers(ctx, PreferredOfferQuery(o.cfg.GpuPrefs, o.cfg.MinReliability))
+	offer, err := o.findOffer(ctx)
 	if err != nil {
 		_ = o.iam.DeleteKey(ctx, scoped.AccessKeyID)
-		o.failJob(ctx, job, fmt.Sprintf("search offers: %v", err))
+		o.failJob(ctx, job, err.Error())
 		return nil
 	}
-	offer, err := PickOffer(offers, o.cfg.GpuPrefs)
-	if err != nil {
-		_ = o.iam.DeleteKey(ctx, scoped.AccessKeyID)
-		o.failJob(ctx, job, fmt.Sprintf("pick offer: %v", err))
-		return nil
-	}
-	o.log.Info("picked offer",
-		"ask_contract_id", offer.AskContractID,
-		"gpu", offer.GpuName, "dph", offer.DphTotal)
+	o.log.Info("picked offer", "ask_contract_id", offer.AskContractID, "gpu", offer.GpuName, "dph", offer.DphTotal)
 
-	env := map[string]string{
+	instanceID, err := o.vast.Mint(ctx, offer.AskContractID, LaunchConfig{
+		Image:   o.cfg.DockerImage,
+		Env:     o.buildEnv(job, video, sourceKey, destPrefix, scoped),
+		Disk:    encoderDiskGB,
+		Onstart: "/usr/local/bin/videosite-encoder",
+		Label:   "videosite-encoder/" + job.ID,
+	})
+	if err != nil {
+		_ = o.iam.DeleteKey(ctx, scoped.AccessKeyID)
+		o.failJob(ctx, job, fmt.Sprintf("mint: %v", err))
+		return nil
+	}
+
+	if err := o.dao.MarkEncodingJobRunning(ctx, job.ID, instanceID, scoped.AccessKeyID, offer.DphTotal); err != nil {
+		// Minted but couldn't record — slay before anyone gets billed.
+		_ = o.vast.Destroy(ctx, instanceID)
+		_ = o.iam.DeleteKey(ctx, scoped.AccessKeyID)
+		return fmt.Errorf("mark running: %w", err)
+	}
+	if err := o.dao.MarkVideoEncoding(ctx, video.ID); err != nil && !errors.Is(err, models.ErrConflict) {
+		o.log.Error("mark video encoding", "err", err, "video_id", video.ID)
+	}
+
+	o.log.Info("minted instance", "instance_id", instanceID, "job_id", job.ID)
+	return nil
+}
+
+func (o *Orchestrator) findOffer(ctx context.Context) (Offer, error) {
+	offers, err := o.vast.SearchOffers(ctx, PreferredOfferQuery(gpuPrefs, minReliability))
+	if err != nil {
+		return Offer{}, fmt.Errorf("search offers: %w", err)
+	}
+	offer, err := PickOffer(offers, gpuPrefs)
+	if err != nil {
+		return Offer{}, fmt.Errorf("pick offer: %w", err)
+	}
+	return offer, nil
+}
+
+func (o *Orchestrator) buildEnv(job *models.EncodingJob, video *models.Video, sourceKey, destPrefix string, scoped *ScopedKey) map[string]string {
+	return map[string]string{
 		"JOB_ID":                job.ID,
 		"VIDEO_ID":              video.ID,
 		"SOURCE_BUCKET":         o.cfg.Bucket,
@@ -142,34 +167,6 @@ func (o *Orchestrator) claimAndLaunchOne(ctx context.Context) error {
 		"WEBHOOK_URL":           strings.TrimRight(o.cfg.WebhookBaseURL, "/") + "/api/encode-callback",
 		"WEBHOOK_SECRET":        job.WebhookSecret,
 	}
-
-	instanceID, err := o.vast.Mint(ctx, offer.AskContractID, LaunchConfig{
-		Image:   o.cfg.DockerImage,
-		Env:     env,
-		Disk:    o.cfg.DiskGB,
-		Onstart: "/usr/local/bin/videosite-encoder",
-		Label:   "videosite-encoder/" + job.ID,
-	})
-	if err != nil {
-		_ = o.iam.DeleteKey(ctx, scoped.AccessKeyID)
-		o.failJob(ctx, job, fmt.Sprintf("mint: %v", err))
-		return nil
-	}
-
-	if err := o.dao.MarkEncodingJobRunning(ctx, job.ID, instanceID, scoped.AccessKeyID, offer.DphTotal); err != nil {
-		// We minted an instance but couldn't record it — slay it so it
-		// doesn't run unattended.
-		_ = o.vast.Destroy(ctx, instanceID)
-		_ = o.iam.DeleteKey(ctx, scoped.AccessKeyID)
-		return fmt.Errorf("mark running: %w", err)
-	}
-
-	if err := o.dao.MarkVideoEncoding(ctx, video.ID); err != nil && !errors.Is(err, models.ErrConflict) {
-		o.log.Error("mark video encoding", "err", err, "video_id", video.ID)
-	}
-
-	o.log.Info("minted instance", "instance_id", instanceID, "job_id", job.ID)
-	return nil
 }
 
 func (o *Orchestrator) failJob(ctx context.Context, job *models.EncodingJob, reason string) {
@@ -182,23 +179,15 @@ func (o *Orchestrator) failJob(ctx context.Context, job *models.EncodingJob, rea
 	}
 }
 
-func (o *Orchestrator) janitorLoop(ctx context.Context) {
-	t := time.NewTicker(o.cfg.JanitorInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			o.runJanitor(ctx)
-		}
-	}
-}
-
-func (o *Orchestrator) runJanitor(ctx context.Context) {
+// reconcile walks non-terminal jobs: timing out the long-running ones,
+// failing jobs whose Vast.ai instance has exited, and tearing down any
+// resources left behind by a terminal job whose webhook ran but whose
+// cleanup didn't get a chance (or where the janitor itself is the path
+// that ends the job).
+func (o *Orchestrator) reconcile(ctx context.Context) {
 	jobs, err := o.dao.ListEncodingJobsForJanitor(ctx)
 	if err != nil {
-		o.log.Error("janitor: list jobs", "err", err)
+		o.log.Error("list jobs for janitor", "err", err)
 		return
 	}
 	for _, job := range jobs {
@@ -207,53 +196,131 @@ func (o *Orchestrator) runJanitor(ctx context.Context) {
 }
 
 func (o *Orchestrator) reconcileJob(ctx context.Context, job *models.EncodingJob) {
-	// Time-out: any running job past the deadline is force-failed.
-	if job.StartedAt != nil && time.Since(*job.StartedAt) > o.cfg.MaxJobDuration {
-		_ = o.completeJob(ctx, job, false, "exceeded max job duration")
+	if job.StartedAt != nil && time.Since(*job.StartedAt) > maxJobDuration {
+		o.completeJob(ctx, job, false, "exceeded max job duration")
 		return
 	}
-
-	// Stuck launching: orchestrator probably crashed mid-mint. Fail the job
-	// and clean up whatever might already exist.
-	if job.Status == models.EncodingJobLaunching && time.Since(job.UpdatedAt) > 5*time.Minute {
-		_ = o.completeJob(ctx, job, false, "stuck in launching")
-		return
-	}
-
 	if job.VastInstanceID == 0 {
-		// Nothing to poll yet; pendingLoop will catch it.
 		return
 	}
-
 	inst, err := o.vast.GetInstance(ctx, job.VastInstanceID)
 	if errors.Is(err, ErrInstanceGone) {
-		_ = o.completeJob(ctx, job, false, "vast instance disappeared")
+		o.completeJob(ctx, job, false, "vast instance disappeared")
 		return
 	}
 	if err != nil {
 		o.log.Warn("janitor: get instance", "err", err, "instance_id", job.VastInstanceID)
 		return
 	}
-
 	if inst.ActualStatus == "exited" || inst.ActualStatus == "stopped" {
-		_ = o.completeJob(ctx, job, false,
+		o.completeJob(ctx, job, false,
 			fmt.Sprintf("instance ended (status=%s msg=%s) without webhook", inst.ActualStatus, inst.StatusMsg))
 	}
 }
 
-// cleanup slays the Vast.ai instance and deletes the IAM key. Idempotent.
-func (o *Orchestrator) cleanup(job *models.EncodingJob) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+// completeJob transitions the EncodingJob + Video together and tears down
+// the instance and IAM key. All steps are idempotent and ignore "already
+// done" errors, so it's safe to call from both the webhook and the janitor.
+func (o *Orchestrator) completeJob(ctx context.Context, job *models.EncodingJob, ok bool, reason string) {
+	var jobErr error
+	if ok {
+		jobErr = o.dao.MarkEncodingJobSucceeded(ctx, job.ID)
+		if jobErr == nil {
+			if err := o.dao.MarkVideoReady(ctx, job.VideoID); err != nil && !errors.Is(err, models.ErrConflict) {
+				o.log.Error("mark video ready", "err", err, "video_id", job.VideoID)
+			}
+		}
+	} else {
+		jobErr = o.dao.MarkEncodingJobFailed(ctx, job.ID, reason)
+		if jobErr == nil {
+			if err := o.dao.MarkVideoFailed(ctx, job.VideoID, reason); err != nil && !errors.Is(err, models.ErrConflict) {
+				o.log.Error("mark video failed", "err", err, "video_id", job.VideoID)
+			}
+		}
+	}
+	// ErrConflict means another path beat us to a terminal state. Either
+	// way, the resources still need cleaning up.
+	if jobErr != nil && !errors.Is(jobErr, models.ErrConflict) {
+		o.log.Error("complete job", "err", jobErr, "id", job.ID)
+		return
+	}
 
 	if job.VastInstanceID != 0 {
 		if err := o.vast.Destroy(ctx, job.VastInstanceID); err != nil {
-			o.log.Warn("cleanup: destroy instance", "err", err, "instance_id", job.VastInstanceID)
+			o.log.Warn("destroy instance", "err", err, "instance_id", job.VastInstanceID)
 		}
 	}
 	if job.TigrisAccessKeyID != "" {
 		if err := o.iam.DeleteKey(ctx, job.TigrisAccessKeyID); err != nil {
-			o.log.Warn("cleanup: delete iam key", "err", err, "access_key_id", job.TigrisAccessKeyID)
+			o.log.Warn("delete iam key", "err", err, "access_key_id", job.TigrisAccessKeyID)
 		}
 	}
+}
+
+// --- Webhook handler -------------------------------------------------------
+
+// WebhookStatus is the value of the "status" field on the encoder's callback.
+type WebhookStatus string
+
+const (
+	WebhookSucceeded WebhookStatus = "succeeded"
+	WebhookFailed    WebhookStatus = "failed"
+)
+
+type WebhookBody struct {
+	JobID  string        `json:"job_id"`
+	Status WebhookStatus `json:"status"`
+	Reason string        `json:"reason,omitempty"`
+}
+
+// SignWebhookBody returns the X-Webhook-Signature value for body+secret.
+func SignWebhookBody(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func verifySignature(secret string, body []byte, header string) bool {
+	expected := SignWebhookBody(secret, body)
+	return hmac.Equal([]byte(expected), []byte(strings.TrimSpace(header)))
+}
+
+func (o *Orchestrator) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<10))
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+	var msg WebhookBody
+	if err := json.Unmarshal(body, &msg); err != nil || msg.JobID == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	job, err := o.dao.GetEncodingJob(r.Context(), msg.JobID)
+	if err != nil {
+		o.log.Warn("webhook: unknown job", "id", msg.JobID, "err", err)
+		http.Error(w, "unknown job", http.StatusNotFound)
+		return
+	}
+	if !verifySignature(job.WebhookSecret, body, r.Header.Get(webhookSigHdr)) {
+		o.log.Warn("webhook: bad signature", "id", msg.JobID)
+		http.Error(w, "bad signature", http.StatusUnauthorized)
+		return
+	}
+
+	switch msg.Status {
+	case WebhookSucceeded:
+		o.completeJob(r.Context(), job, true, "")
+	case WebhookFailed:
+		reason := msg.Reason
+		if reason == "" {
+			reason = "encoder reported failure"
+		}
+		o.completeJob(r.Context(), job, false, reason)
+	default:
+		http.Error(w, fmt.Sprintf("unknown status %q", msg.Status), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
