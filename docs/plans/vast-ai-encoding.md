@@ -604,3 +604,52 @@ planned `encoder:image`.
 `VAST_API_KEY` and `WEBHOOK_BASE_URL` are non-empty. Without them, the
 server logs a warning and skips the encoder entirely — useful for local dev
 against just the upload flow.
+
+### Tigris IAM: bucket-Editor scoped keys (May 2026)
+
+The earlier "managed policies, not inline" deviation still required the
+videosite root key to hold `NamespaceAdmin` on the Tigris org — the
+`CreatePolicy` / `AttachUserPolicy` actions are admin-gated. That's far
+more authority than a media-encoding service should ever hold, so the
+flow was reworked.
+
+`internal/encoder/tigris_iam.go` now calls Tigris's proprietary IAM API
+(`CreateAccessKeyWithBucketsRole` / `DeleteAccessKey`) directly over
+SigV4-signed HTTP. The new per-job key is granted the `Editor` role on
+the configured bucket and nothing else. The caller (videosite's root
+key) only needs `Editor` on that same bucket to mint it — no admin.
+
+The compromise: keys are now bucket-scoped, not path-scoped. Each
+encoder job has read/write/delete authority across the entire encoder
+bucket for its lifetime, not just `raw/<id>/<filename>` and
+`v/<id>/*`. To bound the blast radius:
+
+- The completion path still deletes the key as soon as the job reaches
+  a terminal state (unchanged).
+- A new hourly cleanup goroutine on the orchestrator (`cleanupLoop` /
+  `sweepStaleKeys`) hard-deletes any access key whose `EncodingJob` row
+  is older than 48 hours and still has `tigris_access_key_id` set. This
+  catches orphans from orchestrator crashes between mint and
+  `MarkEncodingJobRunning`, lost webhooks, and any path where
+  `completeJob` didn't run. The 48h ceiling is a compromise: long
+  enough that legitimate `maxJobDuration=2h` jobs never trip it,
+  short enough to cap the worst-case credential lifetime.
+
+Consequences:
+
+- `ScopedKey` is now `{AccessKeyID, SecretKey}` — the `PolicyARN` field
+  is gone (no managed policy to track).
+- `EncodingJob.TigrisPolicyARN` field is removed. The SQLite column is
+  left in place since auto-migrate doesn't drop columns; it sits
+  unused.
+- `MarkEncodingJobRunning` and `DeleteScopedKey` lost their
+  `policyARN` arguments.
+- New DAO methods: `ListStaleEncodingJobKeys(ctx, olderThan)` and
+  `ClearEncodingJobAccessKey(ctx, jobID)`.
+- New package-level constants `cleanupInterval = 1h` and
+  `staleKeyAge = 48h` in `orchestrator.go`.
+- Per-job key names follow the prefix `videosite-encoder-<jobID>` so
+  `tigris access-keys list` is human-readable.
+- The `aws-sdk-go-v2/service/iam` dependency is no longer needed (the
+  proprietary actions aren't modeled there); `aws/signer/v4` is used
+  directly for request signing.

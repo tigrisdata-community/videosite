@@ -2,26 +2,36 @@ package encoder
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/iam"
+	"github.com/google/uuid"
 )
 
-// TigrisIAM wraps the AWS IAM SDK pointed at Tigris's IAM endpoint. Tigris
-// doesn't have IAM Users in the AWS sense — policies attach to access keys,
-// and the SDK's UserName field is reused as the access-key-id. Tigris also
-// does NOT support inline policies (PutUserPolicy returns 501), so the
-// flow is CreatePolicy → AttachUserPolicy and the policy ARN has to be
-// tracked for cleanup.
+// TigrisIAM wraps Tigris's proprietary IAM API. The S3-compatible AWS
+// IAM endpoint requires NamespaceAdmin on the caller to create policies,
+// which is more authority than videosite should hold. Instead this client
+// calls Tigris's own action — CreateAccessKeyWithBucketsRole — which only
+// needs the caller to hold Editor on the same bucket the new key is
+// scoped to. Requests are plain form-encoded POSTs signed SigV4 for
+// service=iam, region=auto.
 type TigrisIAM struct {
-	client *iam.Client
-	bucket string
+	httpClient *http.Client
+	signer     *v4.Signer
+	creds      aws.CredentialsProvider
+	endpoint   string
+	bucket     string
 }
 
 type TigrisIAMConfig struct {
@@ -31,7 +41,13 @@ type TigrisIAMConfig struct {
 	Bucket      string
 }
 
-func NewTigrisIAM(ctx context.Context, cfg TigrisIAMConfig) (*TigrisIAM, error) {
+// accessKeyNamePrefix lets a human reading `tigris access-keys list`
+// trace a key back to a row, and lets the cleanup loop differentiate
+// ours from any other keys in the org if we ever switch to a
+// list-driven sweep.
+const accessKeyNamePrefix = "videosite-encoder-"
+
+func NewTigrisIAM(_ context.Context, cfg TigrisIAMConfig) (*TigrisIAM, error) {
 	if cfg.Endpoint == "" {
 		return nil, errors.New("encoder/iam: Endpoint is required")
 	}
@@ -41,139 +57,146 @@ func NewTigrisIAM(ctx context.Context, cfg TigrisIAMConfig) (*TigrisIAM, error) 
 	if cfg.Bucket == "" {
 		return nil, errors.New("encoder/iam: Bucket is required")
 	}
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithRegion("auto"),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			cfg.AccessKeyID, cfg.SecretKey, "")),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("encoder/iam: load aws config: %w", err)
-	}
-	c := iam.NewFromConfig(awsCfg, func(o *iam.Options) {
-		o.BaseEndpoint = aws.String(cfg.Endpoint)
-	})
-	return &TigrisIAM{client: c, bucket: cfg.Bucket}, nil
+	return &TigrisIAM{
+		httpClient: http.DefaultClient,
+		signer:     v4.NewSigner(),
+		creds:      credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretKey, ""),
+		endpoint:   strings.TrimRight(cfg.Endpoint, "/"),
+		bucket:     cfg.Bucket,
+	}, nil
 }
 
 type ScopedKey struct {
 	AccessKeyID string
 	SecretKey   string
-	PolicyARN   string
 }
 
-// CreateScopedKey mints a fresh access key, creates a managed policy that
-// allows GetObject on exactly sourceKey and PutObject under destPrefix, and
-// attaches the policy to the key. destPrefix should end with a slash. If
-// any step fails the partial work is best-effort rolled back.
-func (t *TigrisIAM) CreateScopedKey(ctx context.Context, sourceKey, destPrefix string) (*ScopedKey, error) {
-	if !strings.HasSuffix(destPrefix, "/") {
-		destPrefix += "/"
-	}
-
-	out, err := t.client.CreateAccessKey(ctx, &iam.CreateAccessKeyInput{})
-	if err != nil {
-		return nil, fmt.Errorf("encoder/iam: create access key: %w", err)
-	}
-	keyID := aws.ToString(out.AccessKey.AccessKeyId)
-	secret := aws.ToString(out.AccessKey.SecretAccessKey)
-
-	policy := map[string]any{
-		"Version": "2012-10-17",
-		"Statement": []map[string]any{
-			{
-				"Effect":   "Allow",
-				"Action":   []string{"s3:GetObject"},
-				"Resource": fmt.Sprintf("arn:aws:s3:::%s/%s", t.bucket, sourceKey),
-			},
-			{
-				"Effect":   "Allow",
-				"Action":   []string{"s3:PutObject", "s3:AbortMultipartUpload"},
-				"Resource": fmt.Sprintf("arn:aws:s3:::%s/%s*", t.bucket, destPrefix),
-			},
+// CreateScopedKey mints a fresh access key with Editor role on the
+// configured bucket. The key name is keyed off jobID so it's traceable.
+// Bucket-level Editor is broader than the original per-object policy
+// scope; the trade-off is documented in docs/plans/vast-ai-encoding.md.
+func (t *TigrisIAM) CreateScopedKey(ctx context.Context, jobID string) (*ScopedKey, error) {
+	reqBody, err := json.Marshal(map[string]any{
+		"req_uuid": uuid.NewString(),
+		"name":     accessKeyNamePrefix + jobID,
+		"buckets_role": []map[string]string{
+			{"bucket": t.bucket, "role": "Editor"},
 		},
-	}
-	policyJSON, err := json.Marshal(policy)
-	if err != nil {
-		return nil, fmt.Errorf("encoder/iam: marshal policy: %w", err)
-	}
-
-	// Policy name is keyed off the access key id so it's unique and so
-	// orphaned policies can be traced back to a specific job.
-	policyName := "videosite-encoder-" + keyID
-	createOut, err := t.client.CreatePolicy(ctx, &iam.CreatePolicyInput{
-		PolicyName:     aws.String(policyName),
-		PolicyDocument: aws.String(string(policyJSON)),
 	})
 	if err != nil {
-		t.deleteAccessKey(ctx, keyID)
-		return nil, fmt.Errorf("encoder/iam: create policy: %w", err)
+		return nil, fmt.Errorf("encoder/iam: marshal create req: %w", err)
 	}
-	policyARN := aws.ToString(createOut.Policy.Arn)
+	form := url.Values{}
+	form.Set("Req", string(reqBody))
 
-	_, err = t.client.AttachUserPolicy(ctx, &iam.AttachUserPolicyInput{
-		UserName:  aws.String(keyID),
-		PolicyArn: aws.String(policyARN),
-	})
-	if err != nil {
-		t.deletePolicy(ctx, policyARN)
-		t.deleteAccessKey(ctx, keyID)
-		return nil, fmt.Errorf("encoder/iam: attach policy: %w", err)
+	var resp struct {
+		CreateAccessKeyResult struct {
+			AccessKey struct {
+				AccessKeyID     string `json:"AccessKeyId"`
+				SecretAccessKey string `json:"SecretAccessKey"`
+				UserName        string `json:"UserName"`
+			} `json:"AccessKey"`
+		} `json:"CreateAccessKeyResult"`
 	}
-
-	return &ScopedKey{AccessKeyID: keyID, SecretKey: secret, PolicyARN: policyARN}, nil
+	if err := t.do(ctx, "CreateAccessKeyWithBucketsRole", form, &resp); err != nil {
+		return nil, fmt.Errorf("encoder/iam: create scoped key: %w", err)
+	}
+	if resp.CreateAccessKeyResult.AccessKey.AccessKeyID == "" {
+		return nil, errors.New("encoder/iam: create scoped key: empty access key id in response")
+	}
+	return &ScopedKey{
+		AccessKeyID: resp.CreateAccessKeyResult.AccessKey.AccessKeyID,
+		SecretKey:   resp.CreateAccessKeyResult.AccessKey.SecretAccessKey,
+	}, nil
 }
 
-// DeleteScopedKey tears down everything CreateScopedKey created. Each step
-// is idempotent and best-effort — already-gone resources are not errors.
-func (t *TigrisIAM) DeleteScopedKey(ctx context.Context, accessKeyID, policyARN string) error {
-	var firstErr error
-	if accessKeyID != "" && policyARN != "" {
-		_, err := t.client.DetachUserPolicy(ctx, &iam.DetachUserPolicyInput{
-			UserName:  aws.String(accessKeyID),
-			PolicyArn: aws.String(policyARN),
-		})
-		if err != nil && !isNoSuchEntity(err) {
-			firstErr = fmt.Errorf("detach policy: %w", err)
-		}
+// DeleteScopedKey deletes the access key. Already-gone keys are not
+// errors so this is safe to call from cleanup paths that may race the
+// completion path.
+func (t *TigrisIAM) DeleteScopedKey(ctx context.Context, accessKeyID string) error {
+	if accessKeyID == "" {
+		return nil
 	}
-	if accessKeyID != "" {
-		if err := t.deleteAccessKey(ctx, accessKeyID); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	if policyARN != "" {
-		if err := t.deletePolicy(ctx, policyARN); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
+	form := url.Values{}
+	form.Set("Action", "DeleteAccessKey")
+	form.Set("Version", "2010-05-08")
+	form.Set("AccessKeyId", accessKeyID)
+	form.Set("UserName", accessKeyID)
 
-func (t *TigrisIAM) deleteAccessKey(ctx context.Context, keyID string) error {
-	_, err := t.client.DeleteAccessKey(ctx, &iam.DeleteAccessKeyInput{
-		AccessKeyId: aws.String(keyID),
-		UserName:    aws.String(keyID),
-	})
-	if err != nil && !isNoSuchEntity(err) {
-		return fmt.Errorf("encoder/iam: delete access key %q: %w", keyID, err)
+	if err := t.do(ctx, "DeleteAccessKey", form, nil); err != nil {
+		if isAlreadyGone(err) {
+			return nil
+		}
+		return fmt.Errorf("encoder/iam: delete access key %q: %w", accessKeyID, err)
 	}
 	return nil
 }
 
-func (t *TigrisIAM) deletePolicy(ctx context.Context, arn string) error {
-	_, err := t.client.DeletePolicy(ctx, &iam.DeletePolicyInput{
-		PolicyArn: aws.String(arn),
-	})
-	if err != nil && !isNoSuchEntity(err) {
-		return fmt.Errorf("encoder/iam: delete policy %q: %w", arn, err)
+// do signs and sends a form-encoded POST to t.endpoint?Action=<action>,
+// then unmarshals the response into out (if non-nil). A non-2xx response
+// is returned as a *httpError so callers can branch on status.
+func (t *TigrisIAM) do(ctx context.Context, action string, form url.Values, out any) error {
+	body := form.Encode()
+	endpoint := t.endpoint + "/?Action=" + action
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	creds, err := t.creds.Retrieve(ctx)
+	if err != nil {
+		return fmt.Errorf("retrieve creds: %w", err)
+	}
+	sum := sha256.Sum256([]byte(body))
+	if err := t.signer.SignHTTP(ctx, creds, req, hex.EncodeToString(sum[:]), "iam", "auto", time.Now()); err != nil {
+		return fmt.Errorf("sign request: %w", err)
+	}
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &httpError{status: resp.StatusCode, body: string(respBody)}
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(respBody, out); err != nil {
+		return fmt.Errorf("decode response: %w (body=%s)", err, respBody)
 	}
 	return nil
 }
 
-func isNoSuchEntity(err error) bool {
-	var apiErr interface{ ErrorCode() string }
-	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchEntity" {
+type httpError struct {
+	status int
+	body   string
+}
+
+func (e *httpError) Error() string {
+	return fmt.Sprintf("tigris iam: http %d: %s", e.status, e.body)
+}
+
+// isAlreadyGone returns true when the error represents a delete on a
+// key that's already missing. Tigris returns 404 or includes
+// "NoSuchEntity" in the body for both AWS-compat and proprietary
+// actions.
+func isAlreadyGone(err error) bool {
+	var herr *httpError
+	if !errors.As(err, &herr) {
+		return false
+	}
+	if herr.status == http.StatusNotFound {
 		return true
 	}
-	return false
+	return strings.Contains(herr.body, "NoSuchEntity")
 }

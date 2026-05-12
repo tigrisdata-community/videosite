@@ -13,12 +13,19 @@ type EncodingJob struct {
 	Status            EncodingJobStatus
 	VastInstanceID    int
 	TigrisAccessKeyID string
-	TigrisPolicyARN   string
 	WebhookSecret     string
 	StartedAt         *time.Time
 	CompletedAt       *time.Time
 	FailureReason     string
 	DphTotal          float64
+}
+
+// StaleEncodingJobKey is the per-row payload returned by
+// ListStaleEncodingJobKeys — just enough to delete the scoped key and
+// clear its column.
+type StaleEncodingJobKey struct {
+	ID          string
+	AccessKeyID string
 }
 
 type EncodingJobStatus string

@@ -84,12 +84,11 @@ func (d *DAO) ClaimPendingEncodingJob(ctx context.Context) (*EncodingJob, error)
 	return job, nil
 }
 
-func (d *DAO) MarkEncodingJobRunning(ctx context.Context, id string, vastInstanceID int, accessKeyID, policyARN string, dph float64) error {
+func (d *DAO) MarkEncodingJobRunning(ctx context.Context, id string, vastInstanceID int, accessKeyID string, dph float64) error {
 	now := time.Now()
 	return d.transitionEncodingJob(ctx, id, EncodingJobLaunching, EncodingJobRunning, map[string]any{
 		"vast_instance_id":     vastInstanceID,
 		"tigris_access_key_id": accessKeyID,
-		"tigris_policy_arn":    policyARN,
 		"dph_total":            dph,
 		"started_at":           &now,
 	})
@@ -142,4 +141,35 @@ func (d *DAO) ListEncodingJobsForJanitor(ctx context.Context) ([]*EncodingJob, e
 		return nil, fmt.Errorf("models: list jobs for janitor: %w", err)
 	}
 	return jobs, nil
+}
+
+// ListStaleEncodingJobKeys returns every job that still has an access key
+// recorded against it but whose row is older than olderThan. The hourly
+// cleanup loop uses this to hard-delete keys whose completion path never
+// ran — orchestrator crashes, lost webhooks, that sort of thing.
+func (d *DAO) ListStaleEncodingJobKeys(ctx context.Context, olderThan time.Duration) ([]StaleEncodingJobKey, error) {
+	cutoff := time.Now().Add(-olderThan)
+	var rows []StaleEncodingJobKey
+	err := d.db.WithContext(ctx).
+		Model(&EncodingJob{}).
+		Select("id, tigris_access_key_id AS access_key_id").
+		Where("tigris_access_key_id <> '' AND created_at < ?", cutoff).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("models: list stale encoding job keys: %w", err)
+	}
+	return rows, nil
+}
+
+// ClearEncodingJobAccessKey nulls out tigris_access_key_id so the next
+// sweep doesn't re-attempt deletion. No status guard — the column is
+// cleanup-only.
+func (d *DAO) ClearEncodingJobAccessKey(ctx context.Context, jobID string) error {
+	res := d.db.WithContext(ctx).Model(&EncodingJob{}).
+		Where("id = ?", jobID).
+		Update("tigris_access_key_id", "")
+	if res.Error != nil {
+		return fmt.Errorf("models: clear encoding job access key %q: %w", jobID, res.Error)
+	}
+	return nil
 }

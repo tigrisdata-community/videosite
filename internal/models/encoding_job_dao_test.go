@@ -184,7 +184,7 @@ func stepThroughTo(target EncodingJobStatus) func(t *testing.T, dao *DAO, jobID 
 		if target == EncodingJobLaunching {
 			return
 		}
-		if err := dao.MarkEncodingJobRunning(ctx, jobID, 42, "tid_test", "arn:test", 0.25); err != nil {
+		if err := dao.MarkEncodingJobRunning(ctx, jobID, 42, "tid_test", 0.25); err != nil {
 			t.Fatalf("running: %v", err)
 		}
 		if target == EncodingJobRunning {

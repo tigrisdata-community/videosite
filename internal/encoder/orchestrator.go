@@ -39,11 +39,13 @@ type Config struct {
 }
 
 const (
-	tickInterval   = 10 * time.Second
-	maxJobDuration = 2 * time.Hour
-	minReliability = 0.95
-	encoderDiskGB  = 32
-	webhookSigHdr  = "X-Webhook-Signature"
+	tickInterval    = 10 * time.Second
+	maxJobDuration  = 2 * time.Hour
+	minReliability  = 0.95
+	encoderDiskGB   = 32
+	webhookSigHdr   = "X-Webhook-Signature"
+	cleanupInterval = 1 * time.Hour
+	staleKeyAge     = 48 * time.Hour
 )
 
 var gpuPrefs = []string{"RTX_3090", "RTX_4090"}
@@ -56,9 +58,13 @@ func (o *Orchestrator) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/encode-callback", o.handleWebhook)
 }
 
-// Start kicks off the background loop. It exits when ctx is cancelled.
+// Start kicks off the background loops. Both exit when ctx is cancelled.
+// The main loop drives claim+reconcile on a 10s tick; the cleanup loop
+// sweeps stale IAM keys hourly so a crash between mint and the
+// completion path doesn't leak credentials forever.
 func (o *Orchestrator) Start(ctx context.Context) {
 	go o.loop(ctx)
+	go o.cleanupLoop(ctx)
 }
 
 func (o *Orchestrator) loop(ctx context.Context) {
@@ -100,7 +106,7 @@ func (o *Orchestrator) claimAndLaunchOne(ctx context.Context) error {
 	sourceKey := fmt.Sprintf("raw/%s/%s", video.ID, video.Filename)
 	destPrefix := fmt.Sprintf("v/%s/", video.ID)
 
-	scoped, err := o.iam.CreateScopedKey(ctx, sourceKey, destPrefix)
+	scoped, err := o.iam.CreateScopedKey(ctx, job.ID)
 	if err != nil {
 		o.failJob(ctx, job, fmt.Sprintf("scoped key: %v", err))
 		return nil
@@ -108,7 +114,7 @@ func (o *Orchestrator) claimAndLaunchOne(ctx context.Context) error {
 
 	offer, err := o.findOffer(ctx)
 	if err != nil {
-		_ = o.iam.DeleteScopedKey(ctx, scoped.AccessKeyID, scoped.PolicyARN)
+		_ = o.iam.DeleteScopedKey(ctx, scoped.AccessKeyID)
 		o.failJob(ctx, job, err.Error())
 		return nil
 	}
@@ -122,15 +128,15 @@ func (o *Orchestrator) claimAndLaunchOne(ctx context.Context) error {
 		Label:   "videosite-encoder/" + job.ID,
 	})
 	if err != nil {
-		_ = o.iam.DeleteScopedKey(ctx, scoped.AccessKeyID, scoped.PolicyARN)
+		_ = o.iam.DeleteScopedKey(ctx, scoped.AccessKeyID)
 		o.failJob(ctx, job, fmt.Sprintf("mint: %v", err))
 		return nil
 	}
 
-	if err := o.dao.MarkEncodingJobRunning(ctx, job.ID, instanceID, scoped.AccessKeyID, scoped.PolicyARN, offer.DphTotal); err != nil {
+	if err := o.dao.MarkEncodingJobRunning(ctx, job.ID, instanceID, scoped.AccessKeyID, offer.DphTotal); err != nil {
 		// Minted but couldn't record — slay before anyone gets billed.
 		_ = o.vast.Destroy(ctx, instanceID)
-		_ = o.iam.DeleteScopedKey(ctx, scoped.AccessKeyID, scoped.PolicyARN)
+		_ = o.iam.DeleteScopedKey(ctx, scoped.AccessKeyID)
 		return fmt.Errorf("mark running: %w", err)
 	}
 	if err := o.dao.MarkVideoEncoding(ctx, video.ID); err != nil && !errors.Is(err, models.ErrConflict) {
@@ -251,10 +257,54 @@ func (o *Orchestrator) completeJob(ctx context.Context, job *models.EncodingJob,
 		}
 	}
 	if job.TigrisAccessKeyID != "" {
-		if err := o.iam.DeleteScopedKey(ctx, job.TigrisAccessKeyID, job.TigrisPolicyARN); err != nil {
+		if err := o.iam.DeleteScopedKey(ctx, job.TigrisAccessKeyID); err != nil {
 			o.log.Warn("delete iam key", "err", err, "access_key_id", job.TigrisAccessKeyID)
 		}
 	}
+}
+
+// cleanupLoop sweeps stale IAM keys every cleanupInterval. Anything
+// whose EncodingJob row is older than staleKeyAge and still has an
+// access key recorded gets deleted unconditionally — this is the
+// safety net for crashes between mint and a successful completion.
+func (o *Orchestrator) cleanupLoop(ctx context.Context) {
+	// Run once on startup so a restart shortly after a crash picks up
+	// the orphan immediately instead of waiting an hour.
+	o.sweepStaleKeys(ctx)
+	t := time.NewTicker(cleanupInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			o.sweepStaleKeys(ctx)
+		}
+	}
+}
+
+func (o *Orchestrator) sweepStaleKeys(ctx context.Context) {
+	stale, err := o.dao.ListStaleEncodingJobKeys(ctx, staleKeyAge)
+	if err != nil {
+		o.log.Error("sweep: list stale keys", "err", err)
+		return
+	}
+	if len(stale) == 0 {
+		return
+	}
+	var deleted int
+	for _, row := range stale {
+		if err := o.iam.DeleteScopedKey(ctx, row.AccessKeyID); err != nil {
+			o.log.Warn("sweep: delete key", "err", err, "job_id", row.ID, "access_key_id", row.AccessKeyID)
+			continue
+		}
+		if err := o.dao.ClearEncodingJobAccessKey(ctx, row.ID); err != nil {
+			o.log.Warn("sweep: clear column", "err", err, "job_id", row.ID)
+			continue
+		}
+		deleted++
+	}
+	o.log.Info("swept stale iam keys", "found", len(stale), "deleted", deleted)
 }
 
 // --- Webhook handler -------------------------------------------------------

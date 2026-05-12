@@ -50,7 +50,7 @@ func TestWebhookHandler(t *testing.T) {
 	if _, err := dao.ClaimPendingEncodingJob(ctx); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := dao.MarkEncodingJobRunning(ctx, job.ID, 99, "tid_test", "arn:test", 0.20); err != nil {
+	if err := dao.MarkEncodingJobRunning(ctx, job.ID, 99, "tid_test", 0.20); err != nil {
 		t.Fatalf("mark running: %v", err)
 	}
 	if err := dao.MarkVideoEncoding(ctx, "vid-1"); err != nil {
