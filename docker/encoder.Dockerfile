@@ -61,7 +61,6 @@ RUN git clone --depth 1 https://github.com/FFmpeg/FFmpeg && \
   --enable-gpl \
   --enable-libass \
   --enable-libfdk-aac \
-  --enable-libnpp \
   --enable-librtmp \
   --enable-libvorbis \
   --enable-libvpx \
