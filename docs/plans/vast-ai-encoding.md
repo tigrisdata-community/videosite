@@ -492,3 +492,115 @@ Unit tests worth writing (table-driven, per the codebase's style):
   rejects when `WebhookSecret` mismatches.
 - `ffmpeg_test.go`: argv builder produces the expected arg list for given
   inputs.
+
+---
+
+## Deviations from plan during implementation
+
+The plan above is preserved as-written for historical reference. The following
+changes were made during implementation:
+
+### One ticker, not two goroutines
+
+Plan had a 5s pending-claimer goroutine + a 30s janitor goroutine. Final
+implementation collapses both into a single 10s `tick()` that calls
+`claimAndLaunchOne()` then `reconcile()` sequentially. One ticker is simpler,
+both halves are cheap, and we never want them racing each other on the same
+job anyway. Tunables (`tickInterval`, `maxJobDuration`, `minReliability`,
+`gpuPrefs`, `encoderDiskGB`) are package-level constants in
+`orchestrator.go`; the planned `--encoder-poll-interval`,
+`--encoder-max-duration`, and `--encoder-min-reliability` flags were not
+added.
+
+### Webhook handler lives in `orchestrator.go`
+
+Plan listed `internal/encoder/webhook.go`. The handler is small (~40 lines)
+and tightly coupled to the orchestrator's `completeJob` cleanup path, so it
+went into `orchestrator.go` alongside the loop. `webhook_test.go` still
+exists as a standalone test file.
+
+### Tigris IAM: managed policies, not inline
+
+Tigris's IAM service returns 501 for `PutUserPolicy` — inline policies
+aren't supported. `CreateScopedKey` now does `CreateAccessKey` →
+`CreatePolicy` → `AttachUserPolicy`, and the resulting policy ARN has to be
+tracked on the `EncodingJob` for cleanup. Consequences:
+
+- New `EncodingJob.TigrisPolicyARN string` field.
+- `MarkEncodingJobRunning` takes an extra `policyARN` argument.
+- `ScopedKey` is now a struct (`AccessKeyID`, `SecretKey`, `PolicyARN`)
+  instead of two return values.
+- `DeleteScopedKey` does `DetachUserPolicy` → `DeleteAccessKey` →
+  `DeletePolicy`, all idempotent (treats `NoSuchEntity` as success).
+- Policy also grants `s3:AbortMultipartUpload` so a crashed encoder doesn't
+  leak in-progress multiparts.
+
+### `MarkEncodingJobRunning` / janitor scope
+
+Plan's DAO had `ListRunningEncodingJobs` (only `running`). Final
+implementation has `ListEncodingJobsForJanitor` returning both `launching`
+and `running` jobs — if the server dies between `Mint` and
+`MarkEncodingJobRunning`, the `launching` row would otherwise be stuck. The
+reconciler treats a `launching` job with no `VastInstanceID` as a no-op
+(waits for the orchestrator to retry or the timeout to fire) but will time
+it out via the `maxJobDuration` check.
+
+### `Mint` returns instance ID only
+
+Plan: `Mint(ctx, askID, cfg) (instanceID int, dph float64, err error)`. Real
+signature: `Mint(ctx, askID, cfg LaunchConfig) (int, error)`. The dph value
+is read off the `Offer` we picked before calling `Mint`, so passing it
+through `Mint`'s return was redundant. The `force` / `cancel_unavail` fields
+mentioned in the plan's launch body were also dropped from the wire form —
+vast-python sends them but they aren't required, and we don't have a use
+for either.
+
+### Encoder integration via `uploader.OnUploaded`
+
+Plan: `internal/upload/upload.go` finalize() directly calls
+`dao.CreateEncodingJob`. Final: `upload.Handler` exposes an `OnUploaded
+func(ctx, videoID)` field; `cmd/videosite/server.go` sets it to a closure
+that creates the encoding job when (and only when) the orchestrator is
+configured. Keeps `internal/upload` free of any encoder import.
+
+### Status transitions are not in a transaction
+
+Plan said `MarkEncodingJob{Succeeded,Failed}` plus the matching `MarkVideo*`
+update would be "wrap[ped] in a single GORM transaction inside the
+orchestrator." Implementation does them as two sequential calls and tolerates
+mid-flight failure: the second call returns `ErrConflict` if it can't apply
+(e.g. video is already in a terminal state), the orchestrator logs and moves
+on. Janitor + webhook both call `completeJob`, so a partially-applied state
+gets retried next tick.
+
+### Encoder binary: tmpdir + mime detection, no panic recovery
+
+Plan called for `/tmp/work/dash` hardcoded paths and explicit content types
+for manifest/segments. Real binary uses `os.MkdirTemp("", "videosite-encoder-*")`
+and `mime.TypeByExtension`. There's no top-level `recover()` either — the
+plan's note about "defer to ensure the webhook fires even on panic" was
+dropped; the existing `os.Exit(1)` + webhook-on-error path is good enough,
+and a panic in `run()` will surface in the Vast.ai container logs.
+
+Env var set also includes `AWS_REGION=auto`, which the plan didn't list.
+
+### Docker base image and registry
+
+Plan: `FROM jrottenberg/ffmpeg:nvidia`. Real Dockerfile uses
+`roflcoopter/amd64-cuda-ffmpeg:<date-tag>` because `jrottenberg/ffmpeg`'s
+nvidia variant lags behind on CUDA toolkit versions and was missing NVENC
+support for newer drivers. The image uses `CMD` instead of `ENTRYPOINT`
+(matches how `docker:www` is built).
+
+Registry: `ghcr.io/tigrisdata-community/videosite/encoder` (not the planned
+`reg.xeiaso.net/xeserv/...` — this repo lives under
+`github.com/tigrisdata-community/videosite`). Taskfile target is
+`docker:encoder` (alongside `docker:www` and a `docker` umbrella), not the
+planned `encoder:image`.
+
+### Optional orchestrator
+
+`cmd/videosite/server.go` only constructs the orchestrator when both
+`VAST_API_KEY` and `WEBHOOK_BASE_URL` are non-empty. Without them, the
+server logs a warning and skips the encoder entirely — useful for local dev
+against just the upload flow.

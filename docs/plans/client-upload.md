@@ -340,3 +340,17 @@ This is the documented Alpine pattern and avoids a load-order race: `x-data="upl
 ### Stage/submit UX instead of immediate upload
 
 Plan's `Upload()` template auto-uploaded on file pick (`@change="enqueue($event.target.files)"`). Final UX has a stage/submit split: file pick adds rows with status `ready`, an explicit Upload button drains them (`stage()` + `submit()`), and a Clear button discards staged rows before submitting. Both buttons disable during upload.
+
+### Explicit `uploading` state instead of reusing `uploaded`
+
+The plan said `CreateVideo` would insert with `Status: VideoStatusUploaded` and `MarkVideoUploaded` would be a no-op placeholder. Final implementation added a new `VideoStatusUploading` constant — rows start in `uploading` and `MarkVideoUploaded` is a real transition (`uploading → uploaded`) called from `finalize()`. This made room for a `Filename` column on `Video` and for `MarkVideoFailed`, which the broker now invokes from every error path (presign, multipart-init) so a row that never reaches `finalize` doesn't sit in a half-state forever.
+
+`CreateVideo`'s signature grew a `filename` parameter — the server captures the client-supplied name at `multipart-init` so the encoder orchestrator can later rebuild `raw/<id>/<filename>` without keeping the value in the JS.
+
+### `/api/upload/cancel` route
+
+Added a third broker route. The JS upload driver calls it from its `catch` block when a multipart upload fails so the server can mark the half-uploaded `Video` row failed instead of leaving it in `uploading` until a cleanup job notices. Wire form: `application/x-www-form-urlencoded` with `id` and optional `reason`.
+
+### `OnUploaded` callback hook on `*Handler`
+
+Not in the original plan — added so the encoder plan ([[vast-ai-encoding]]) can plug a `dao.CreateEncodingJob(...)` call into `finalize()` without the upload package importing the encoder package. Server wires the closure in `NewServer` only when the encoder is configured (Vast API key + webhook base URL both set).
