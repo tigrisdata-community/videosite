@@ -209,7 +209,7 @@ func PreferredOfferQuery(gpuNames []string, minReliability float64) map[string]a
 		"num_gpus":      map[string]any{"eq": 1},
 		"gpu_name":      map[string]any{"in": gpuNames},
 		"cuda_max_good": map[string]any{"gte": 12.0},
-		"inet_down":     map[string]any{"gte": 200},
+		"inet_down":     map[string]any{"gte": 1000},
 		"order":         [][]string{{"dph_total", "asc"}},
 		"limit":         20,
 		"type":          "ondemand",
