@@ -148,8 +148,8 @@ func run(ctx context.Context, lg *slog.Logger, e env) (string, error) {
 	args := encoder.FFmpegArgs(srcPath, manifestPath)
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	lw := &limitedWriter{max: 64 << 10}
-	cmd.Stdout = io.MultiWriter(os.Stderr, lw)
-	cmd.Stderr = io.MultiWriter(os.Stderr, lw)
+	cmd.Stdout = io.MultiWriter(os.Stderr, os.Stdout, lw)
+	cmd.Stderr = io.MultiWriter(os.Stderr, os.Stdout, lw)
 	lg.Info("running ffmpeg", "args", strings.Join(args, " "))
 	if err := cmd.Run(); err != nil {
 		return lw.String(), fmt.Errorf("ffmpeg: %w", err)
