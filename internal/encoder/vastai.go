@@ -98,20 +98,28 @@ func (c *VastClient) do(ctx context.Context, method, path string, body any) ([]b
 // SearchOffers calls POST /api/v0/bundles/. The query is the operator-based
 // filter object documented in vast-python (e.g. {"gpu_name": {"in": [...]}}).
 func (c *VastClient) SearchOffers(ctx context.Context, query map[string]any) ([]Offer, error) {
+	offers, _, err := c.SearchOffersRaw(ctx, query)
+	return offers, err
+}
+
+// SearchOffersRaw is SearchOffers but also returns the raw response body, so
+// the vast-search CLI can show the full server response when diagnosing
+// empty results.
+func (c *VastClient) SearchOffersRaw(ctx context.Context, query map[string]any) ([]Offer, []byte, error) {
 	body, status, err := c.do(ctx, http.MethodPost, "/api/v0/bundles/", query)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if status >= 400 {
-		return nil, fmt.Errorf("encoder/vastai: search offers: %d: %s", status, body)
+		return nil, body, fmt.Errorf("encoder/vastai: search offers: %d: %s", status, body)
 	}
 	var resp struct {
 		Offers []Offer `json:"offers"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("encoder/vastai: search offers: parse: %w", err)
+		return nil, body, fmt.Errorf("encoder/vastai: search offers: parse: %w", err)
 	}
-	return resp.Offers, nil
+	return resp.Offers, body, nil
 }
 
 // Mint accepts an offer and creates an instance. Returns the new instance ID.

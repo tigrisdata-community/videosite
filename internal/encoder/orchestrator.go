@@ -29,8 +29,8 @@ type Orchestrator struct {
 }
 
 // Config is what the server passes in. Tunables not in here are constants
-// (tickInterval, maxJobDuration, gpuPrefs, minReliability) — promote them to
-// fields the day someone actually wants to override one.
+// (tickInterval, maxJobDuration, DefaultGPUPrefs, DefaultMinReliability) —
+// promote them to fields the day someone actually wants to override one.
 type Config struct {
 	DockerImage     string
 	WebhookBaseURL  string // public base URL the encoder POSTs callbacks to
@@ -41,14 +41,20 @@ type Config struct {
 const (
 	tickInterval    = 10 * time.Second
 	maxJobDuration  = 2 * time.Hour
-	minReliability  = 0.95
 	encoderDiskGB   = 32
 	webhookSigHdr   = "X-Webhook-Signature"
 	cleanupInterval = 1 * time.Hour
 	staleKeyAge     = 48 * time.Hour
+
+	// DefaultMinReliability is the host reliability floor the orchestrator
+	// passes to PreferredOfferQuery. Exported so the vast-search CLI can
+	// share the same default.
+	DefaultMinReliability = 0.95
 )
 
-var gpuPrefs = []string{"RTX_3090", "RTX_4090"}
+// DefaultGPUPrefs is the GPU preference list the orchestrator uses, ordered
+// highest priority first. Exported so the vast-search CLI matches production.
+var DefaultGPUPrefs = []string{"RTX_3090", "RTX_4090"}
 
 func NewOrchestrator(cfg Config, dao *models.DAO, vast *VastClient, iam *TigrisIAM, lg *slog.Logger) *Orchestrator {
 	return &Orchestrator{cfg: cfg, dao: dao, vast: vast, iam: iam, log: lg}
@@ -148,11 +154,11 @@ func (o *Orchestrator) claimAndLaunchOne(ctx context.Context) error {
 }
 
 func (o *Orchestrator) findOffer(ctx context.Context) (Offer, error) {
-	offers, err := o.vast.SearchOffers(ctx, PreferredOfferQuery(gpuPrefs, minReliability))
+	offers, err := o.vast.SearchOffers(ctx, PreferredOfferQuery(DefaultGPUPrefs, DefaultMinReliability))
 	if err != nil {
 		return Offer{}, fmt.Errorf("search offers: %w", err)
 	}
-	offer, err := PickOffer(offers, gpuPrefs)
+	offer, err := PickOffer(offers, DefaultGPUPrefs)
 	if err != nil {
 		return Offer{}, fmt.Errorf("pick offer: %w", err)
 	}
