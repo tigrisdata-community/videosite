@@ -16,7 +16,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
-    -o /out/videosite-encoder ./cmd/videosite-encoder
+  -o /out/videosite-encoder ./cmd/videosite-encoder
 
 FROM nvidia/cuda:12.8.2-devel-ubuntu22.04 AS ffmpeg-build
 
@@ -26,60 +26,56 @@ ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig/
 ENV PATH=/usr/local/cuda/bin:${PATH}
 
 RUN apt-get update && apt-get -y upgrade \
- && apt-get install -y --no-install-recommends \
-      ca-certificates \
-      libass-dev \
-      libfdk-aac-dev \
-      librtmp-dev \
-      libssl-dev \
-      libvorbis-dev \
-      libvpx-dev \
-      libx264-dev \
-      libx265-dev \
-      ocl-icd-opencl-dev \
-      build-essential \
-      cmake \
-      gcc \
-      git \
-      libtool \
-      nasm \
-      yasm \
-      clang \
- && rm -rf /var/lib/apt/lists/*
+  && apt-get install -y --no-install-recommends \
+  ca-certificates \
+  libass-dev \
+  libfdk-aac-dev \
+  librtmp-dev \
+  libssl-dev \
+  libvorbis-dev \
+  libvpx-dev \
+  libx264-dev \
+  libx265-dev \
+  ocl-icd-opencl-dev \
+  build-essential \
+  cmake \
+  gcc \
+  git \
+  libtool \
+  nasm \
+  yasm \
+  clang \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
 RUN git clone --depth 1 -b sdk/12.2 https://github.com/FFmpeg/nv-codec-headers.git \
- && cd nv-codec-headers && make && make install
+  && cd nv-codec-headers && make && make install
 
 RUN git clone --depth 1 https://github.com/FFmpeg/FFmpeg && \
   cd /src/FFmpeg && \
   ./configure \
-    --prefix="/app/ffmpeg" \
-    --disable-debug \
-    --enable-cuda \
-    --enable-cuda-llvm \
-    --enable-cuvid \
-    --enable-ffnvcodec \
-    --enable-gpl \
-    --enable-libass \
-    --enable-libfdk-aac \
-    --enable-libnpp \
-    --enable-librtmp \
-    --enable-libvorbis \
-    --enable-libvpx \
-    --enable-libx264 \
-    --enable-libx265 \
-    --enable-nonfree \
-    --enable-nvenc \
-    --enable-opencl \
-    --enable-openssl \
-    --enable-pic \
-    --enable-static \
-    --extra-cflags="-I/usr/local/cuda/include/" \
-    --extra-ldflags="-L/usr/local/cuda/lib64/" && \
+  --prefix="/app/ffmpeg" \
+  --disable-debug \
+  --enable-cuvid \
+  --enable-ffnvcodec \
+  --enable-gpl \
+  --enable-libass \
+  --enable-libfdk-aac \
+  --enable-libnpp \
+  --enable-librtmp \
+  --enable-libvorbis \
+  --enable-libvpx \
+  --enable-libx264 \
+  --enable-libx265 \
+  --enable-nonfree \
+  --enable-nvenc \
+  --enable-opencl \
+  --enable-openssl \
+  --enable-pic \
+  --enable-static && \
   make -j"$(nproc)" && make install
 
-FROM nvidia/cuda:12.8.2-runtime-ubuntu22.04
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
@@ -99,23 +95,22 @@ ENV PATH=/app/ffmpeg/bin:${PATH}
 #   libx265       -> libx265-199
 #   opencl        -> ocl-icd-libopencl1 (ICD loader; vendor ICD comes from
 #                    the nvidia-container-runtime driver mount)
-# CUDA / NPP / NVENC libs come from the CUDA runtime base image plus the
-# driver mount, so nothing extra to install for those.
 RUN apt-get update && apt-get -y upgrade \
- && apt-get install -y --no-install-recommends \
-      ca-certificates \
-      libass9 \
-      libfdk-aac2 \
-      librtmp1 \
-      libssl3 \
-      libvorbis0a \
-      libvorbisenc2 \
-      libvpx7 \
-      libx264-163 \
-      libx265-199 \
-      ocl-icd-libopencl1 \
- && rm -rf /var/lib/apt/lists/*
+  && apt-get install -y --no-install-recommends \
+  ca-certificates \
+  libass9 \
+  libfdk-aac2 \
+  librtmp1 \
+  libssl3 \
+  libvorbis0a \
+  libvorbisenc2 \
+  libvpx7 \
+  libx264-163 \
+  libx265-199 \
+  ocl-icd-libopencl1 \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ffmpeg-build /app/ffmpeg /app/ffmpeg
+RUN ldd /app/ffmpeg/bin/ffmpeg -version
 COPY --from=go-build /out/videosite-encoder /usr/local/bin/videosite-encoder
 CMD ["/usr/local/bin/videosite-encoder"]
