@@ -54,7 +54,7 @@ const (
 
 // DefaultGPUPrefs is the GPU preference list the orchestrator uses, ordered
 // highest priority first. Exported so the vast-search CLI matches production.
-var DefaultGPUPrefs = []string{"RTX 3090", "RTX 4090"}
+var DefaultGPUPrefs = []string{"RTX 3090", "RTX 4090", "RTX 5090"}
 
 func NewOrchestrator(cfg Config, dao *models.DAO, vast *VastClient, iam *TigrisIAM, lg *slog.Logger) *Orchestrator {
 	return &Orchestrator{cfg: cfg, dao: dao, vast: vast, iam: iam, log: lg}
