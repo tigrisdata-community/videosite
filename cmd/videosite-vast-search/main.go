@@ -25,6 +25,7 @@ var (
 	vastAPIKey     = flag.String("vast-api-key", "", "Vast.ai API key")
 	vastAPIBase    = flag.String("vast-api-base", "https://console.vast.ai", "Vast.ai API base URL")
 	gpuPrefs       = flag.String("gpu-prefs", strings.Join(encoder.DefaultGPUPrefs, ","), "comma-separated GPU names, highest priority first; empty = no gpu_name filter")
+	geolocations   = flag.String("geolocations", strings.Join(encoder.DefaultGeolocations, ","), "comma-separated two-letter country codes for the geolocation filter; empty = no filter")
 	minReliability = flag.Float64("min-reliability", encoder.DefaultMinReliability, "minimum host reliability; 0 = no filter")
 	minCUDA        = flag.Float64("min-cuda", 12.0, "minimum cuda_max_good; 0 = no filter")
 	minInetDown    = flag.Int("min-inet-down", 200, "minimum inet_down Mbps; 0 = no filter")
@@ -44,16 +45,10 @@ func main() {
 		os.Exit(2)
 	}
 
-	var prefs []string
-	if *gpuPrefs != "" {
-		for p := range strings.SplitSeq(*gpuPrefs, ",") {
-			if p = strings.TrimSpace(p); p != "" {
-				prefs = append(prefs, p)
-			}
-		}
-	}
+	prefs := splitCSV(*gpuPrefs)
+	countries := splitCSV(*geolocations)
 
-	query := buildQuery(prefs)
+	query := buildQuery(prefs, countries)
 
 	if *verbose {
 		dumpJSON(os.Stderr, "query", query)
@@ -114,8 +109,8 @@ func main() {
 // buildQuery starts from the production query and applies overrides /
 // removals based on CLI flags. A zero or empty flag drops the
 // corresponding filter so you can isolate which one is excluding hosts.
-func buildQuery(prefs []string) map[string]any {
-	q := encoder.PreferredOfferQuery(prefs, *minReliability)
+func buildQuery(prefs, countries []string) map[string]any {
+	q := encoder.PreferredOfferQuery(prefs, countries, *minReliability)
 	if *minReliability == 0 {
 		delete(q, "reliability")
 	}
@@ -141,6 +136,19 @@ func buildQuery(prefs []string) map[string]any {
 		q["limit"] = *limit
 	}
 	return q
+}
+
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for p := range strings.SplitSeq(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func dumpJSON(w *os.File, label string, v any) {

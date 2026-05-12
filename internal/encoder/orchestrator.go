@@ -57,6 +57,16 @@ const (
 // highest priority first. Exported so the vast-search CLI matches production.
 var DefaultGPUPrefs = []string{"RTX 3090", "RTX 4090", "RTX 5090"}
 
+// DefaultGeolocations is the country allowlist passed to PreferredOfferQuery:
+// North America plus Western/Northern Europe. Restricts hosts to jurisdictions
+// we're comfortable shipping source uploads to. Exported so the vast-search
+// CLI matches production.
+var DefaultGeolocations = []string{
+	"US", "CA", "MX",
+	"GB", "IE", "FR", "DE", "NL", "BE", "CH", "AT",
+	"IT", "ES", "SE", "FI", "NO", "DK", "PL",
+}
+
 func NewOrchestrator(cfg Config, dao *models.DAO, vast *VastClient, iam *TigrisIAM, lg *slog.Logger) *Orchestrator {
 	return &Orchestrator{cfg: cfg, dao: dao, vast: vast, iam: iam, log: lg}
 }
@@ -166,7 +176,7 @@ func (o *Orchestrator) claimAndLaunchOne(ctx context.Context) error {
 }
 
 func (o *Orchestrator) findOffer(ctx context.Context) (Offer, error) {
-	offers, err := o.vast.SearchOffers(ctx, PreferredOfferQuery(DefaultGPUPrefs, DefaultMinReliability))
+	offers, err := o.vast.SearchOffers(ctx, PreferredOfferQuery(DefaultGPUPrefs, DefaultGeolocations, DefaultMinReliability))
 	if err != nil {
 		return Offer{}, fmt.Errorf("search offers: %w", err)
 	}

@@ -74,7 +74,7 @@ func TestPickOffer(t *testing.T) {
 }
 
 func TestPreferredOfferQuery_VerifiedOnly(t *testing.T) {
-	q := PreferredOfferQuery([]string{"RTX 3090"}, 0.95)
+	q := PreferredOfferQuery([]string{"RTX 3090"}, []string{"US", "CA"}, 0.95)
 	got, ok := q["verified"].(map[string]any)
 	if !ok {
 		t.Fatalf("query missing verified filter; got: %v", q["verified"])
@@ -84,6 +84,20 @@ func TestPreferredOfferQuery_VerifiedOnly(t *testing.T) {
 	}
 	if _, ok := q["gpu_name"]; !ok {
 		t.Errorf("query missing gpu_name filter")
+	}
+	geo, ok := q["geolocation"].(map[string]any)
+	if !ok {
+		t.Fatalf("query missing geolocation filter; got: %v", q["geolocation"])
+	}
+	if _, ok := geo["in"].([]string); !ok {
+		t.Errorf("geolocation filter = %v, want {in: []string}", geo)
+	}
+}
+
+func TestPreferredOfferQuery_EmptyCountriesDropsGeoFilter(t *testing.T) {
+	q := PreferredOfferQuery([]string{"RTX 3090"}, nil, 0.95)
+	if _, ok := q["geolocation"]; ok {
+		t.Errorf("expected geolocation filter to be absent when countries is empty")
 	}
 }
 

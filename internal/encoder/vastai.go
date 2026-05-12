@@ -200,9 +200,10 @@ func (c *VastClient) Destroy(ctx context.Context, id int) error {
 
 // PreferredOfferQuery returns the search filters we use to find boxes.
 // Verified-only: unverified hosts are cheaper but flaky enough that the
-// retry-on-failure tax wasn't worth the savings in practice.
-func PreferredOfferQuery(gpuNames []string, minReliability float64) map[string]any {
-	return map[string]any{
+// retry-on-failure tax wasn't worth the savings in practice. An empty
+// countries slice drops the geolocation filter entirely.
+func PreferredOfferQuery(gpuNames, countries []string, minReliability float64) map[string]any {
+	q := map[string]any{
 		"verified":      map[string]any{"eq": true},
 		"rentable":      map[string]any{"eq": true},
 		"reliability":   map[string]any{"gte": minReliability},
@@ -214,6 +215,10 @@ func PreferredOfferQuery(gpuNames []string, minReliability float64) map[string]a
 		"limit":         20,
 		"type":          "ondemand",
 	}
+	if len(countries) > 0 {
+		q["geolocation"] = map[string]any{"in": countries}
+	}
+	return q
 }
 
 // PickOffer sorts offers so a name earlier in `prefs` always beats a later
