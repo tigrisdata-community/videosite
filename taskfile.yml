@@ -16,6 +16,16 @@ tasks:
     cmds:
       - go run ./cmd/videosite
     aliases: [default]
+  test:
+    deps: [generate]
+    desc: Run tests for a specific package (e.g. `task test -- ./internal/encoder -run TestName`)
+    cmds:
+      - go test -race {{.CLI_ARGS}}
+  test:all:
+    deps: [generate]
+    desc: Run the full test suite (matches CI)
+    cmds:
+      - go test -race ./...
   db:
     desc: SQLite REPL
     cmds:

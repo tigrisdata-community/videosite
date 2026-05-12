@@ -4,12 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-`task` and `templ` are Go tools (`go.mod` `tool` block) — invoke via `go tool`:
+`task` and `templ` are Go tools (`go.mod` `tool` block) — invoke through `go tool task <name>`. Definitions live in `taskfile.yml`:
 
-- `go tool task` — regenerates templ + runs `go run ./cmd/videosite`.
-- `go generate ./...` — regenerates templ; required before `go build` / `go test`.
-- `go test -race ./...` — CI test command. Single test: `go test -race -run TestName ./internal/encoder`.
+- `go tool task` (alias for `task run`) — regenerates templ + runs `go run ./cmd/videosite`.
+- `go tool task generate` — regenerates templ; required before `go build`. Other tasks that need it depend on it already.
+- `go tool task test:all` — full suite, `go test -race ./...` (matches CI).
+- `go tool task test -- <pkg> [flags]` — single-package run, e.g. `go tool task test -- ./internal/encoder -run TestName`.
 - `go tool task docker` — builds and pushes both images via buildx bake.
+- `go tool task db` — opens a `sqlite3` REPL against `./var/data.db`.
 
 Config is via flags or matching env vars (`facebookgo/flagenv`), with `.env` auto-loaded. See `cmd/videosite/main.go` for the full set.
 
