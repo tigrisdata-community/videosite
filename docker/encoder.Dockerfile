@@ -110,6 +110,7 @@ RUN apt-get update && apt-get -y upgrade \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ffmpeg-build /app/ffmpeg /app/ffmpeg
-RUN ldd /app/ffmpeg/bin/ffmpeg -version
+RUN ldd /app/ffmpeg/bin/ffmpeg \
+  && ffmpeg -version
 COPY --from=go-build /out/videosite-encoder /usr/local/bin/videosite-encoder
 CMD ["/usr/local/bin/videosite-encoder"]
