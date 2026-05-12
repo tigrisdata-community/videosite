@@ -31,5 +31,8 @@ jobs:
       - uses: docker/bake-action@4a9a8d494466d37134e2bfca2d3a8de8fb2681ad # v5.13.0
         with:
           push: true
+          set: |
+            *.cache-from=type=gha
+            *.cache-to=type=gha,mode=max
         env:
           TAG: ${{ inputs.tag || 'latest' }}
