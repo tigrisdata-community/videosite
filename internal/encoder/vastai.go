@@ -198,11 +198,12 @@ func (c *VastClient) Destroy(ctx context.Context, id int) error {
 	return nil
 }
 
-// PreferredOfferQuery returns the search filters we use to find boxes. We
-// intentionally don't filter on `verified` because unverified hosts are
-// dramatically cheaper and our failure-retry path makes them safe enough.
+// PreferredOfferQuery returns the search filters we use to find boxes.
+// Verified-only: unverified hosts are cheaper but flaky enough that the
+// retry-on-failure tax wasn't worth the savings in practice.
 func PreferredOfferQuery(gpuNames []string, minReliability float64) map[string]any {
 	return map[string]any{
+		"verified":      map[string]any{"eq": true},
 		"rentable":      map[string]any{"eq": true},
 		"reliability":   map[string]any{"gte": minReliability},
 		"num_gpus":      map[string]any{"eq": 1},

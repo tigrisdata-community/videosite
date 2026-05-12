@@ -73,10 +73,14 @@ func TestPickOffer(t *testing.T) {
 	}
 }
 
-func TestPreferredOfferQuery_NoVerifiedFilter(t *testing.T) {
-	q := PreferredOfferQuery([]string{"RTX_3090"}, 0.95)
-	if _, ok := q["verified"]; ok {
-		t.Errorf("query should not filter on verified; got: %v", q["verified"])
+func TestPreferredOfferQuery_VerifiedOnly(t *testing.T) {
+	q := PreferredOfferQuery([]string{"RTX 3090"}, 0.95)
+	got, ok := q["verified"].(map[string]any)
+	if !ok {
+		t.Fatalf("query missing verified filter; got: %v", q["verified"])
+	}
+	if got["eq"] != true {
+		t.Errorf("verified filter = %v, want {eq: true}", got)
 	}
 	if _, ok := q["gpu_name"]; !ok {
 		t.Errorf("query missing gpu_name filter")
