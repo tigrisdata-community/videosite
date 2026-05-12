@@ -8,6 +8,7 @@ type Video struct {
 	Filename      string
 	Status        VideoStatus
 	FailureReason string
+	EncodeLogs    string
 }
 
 type VideoStatus string

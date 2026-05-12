@@ -169,3 +169,111 @@ func TestWebhookHandler(t *testing.T) {
 		t.Errorf("video status = %q, want ready", v.Status)
 	}
 }
+
+func TestWebhookHandler_FailedWithLogs(t *testing.T) {
+	ctx := context.Background()
+	dao, err := models.New(filepath.Join(t.TempDir(), "test.db"),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("init dao: %v", err)
+	}
+	if _, err := dao.CreateVideo(ctx, "vid-fail", "bad.mp4"); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
+	if err := dao.MarkVideoUploaded(ctx, "vid-fail"); err != nil {
+		t.Fatalf("mark uploaded: %v", err)
+	}
+	job, err := dao.CreateEncodingJob(ctx, "vid-fail")
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if _, err := dao.ClaimPendingEncodingJob(ctx); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := dao.MarkEncodingJobRunning(ctx, job.ID, 42, "tid_fail", 0.10); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	if err := dao.MarkVideoEncoding(ctx, "vid-fail"); err != nil {
+		t.Fatalf("mark video encoding: %v", err)
+	}
+
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v0/instances/"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.Header().Set("Content-Type", "text/xml")
+			_, _ = io.WriteString(w, `<Response/>`)
+		}
+	}))
+	defer stub.Close()
+
+	iam, err := NewTigrisIAM(ctx, TigrisIAMConfig{
+		Endpoint: stub.URL, AccessKeyID: "k", SecretKey: "s", Bucket: "b",
+	})
+	if err != nil {
+		t.Fatalf("iam: %v", err)
+	}
+
+	o := &Orchestrator{
+		cfg:  Config{},
+		dao:  dao,
+		vast: NewVastClient("k", stub.URL, stub.Client()),
+		iam:  iam,
+		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	mux := http.NewServeMux()
+	o.Mount(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ffmpegOutput := "frame= 1000 fps=30 q=28.0 size=  123456kB time=00:01:23.45 bitrate=12345.6kbits/s speed=1.0x\n[h264_nvenc @ 0x55a] encoder failed: invalid param"
+	raw, err := json.Marshal(WebhookBody{
+		JobID:  job.ID,
+		Status: WebhookFailed,
+		Reason: "ffmpeg: exit status 1",
+		Logs:   ffmpegOutput,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/encode-callback", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("req: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webhookSigHdr, SignWebhookBody(job.WebhookSecret, raw))
+
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		out, _ := io.ReadAll(resp.Body)
+		t.Fatalf("code = %d, want 204 body=%s", resp.StatusCode, out)
+	}
+
+	got, err := dao.GetEncodingJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got.Status != models.EncodingJobFailed {
+		t.Errorf("job status = %q, want failed", got.Status)
+	}
+	v, err := dao.GetVideo(ctx, "vid-fail")
+	if err != nil {
+		t.Fatalf("get video: %v", err)
+	}
+	if v.Status != models.VideoStatusFailed {
+		t.Errorf("video status = %q, want failed", v.Status)
+	}
+	if v.FailureReason != "ffmpeg: exit status 1" {
+		t.Errorf("failure reason = %q, want ffmpeg error", v.FailureReason)
+	}
+	if v.EncodeLogs != ffmpegOutput {
+		t.Errorf("encode logs = %q, want ffmpeg output", v.EncodeLogs)
+	}
+}

@@ -54,6 +54,23 @@ func (d *DAO) MarkVideoFailed(ctx context.Context, id, reason string) error {
 	return nil
 }
 
+func (d *DAO) MarkVideoFailedWithLogs(ctx context.Context, id, reason, logs string) error {
+	res := d.db.WithContext(ctx).Model(&Video{}).
+		Where("id = ? AND status <> ?", id, string(VideoStatusReady)).
+		Updates(map[string]any{
+			"status":         string(VideoStatusFailed),
+			"failure_reason": reason,
+			"encode_logs":    logs,
+		})
+	if res.Error != nil {
+		return fmt.Errorf("models: mark video failed %q: %w", id, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("models: mark video failed %q: %w", id, ErrConflict)
+	}
+	return nil
+}
+
 func (d *DAO) GetVideo(ctx context.Context, id string) (*Video, error) {
 	var v Video
 	if err := d.db.WithContext(ctx).Where("id = ?", id).First(&v).Error; err != nil {

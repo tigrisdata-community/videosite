@@ -69,6 +69,25 @@ func loadEnv() (env, error) {
 	return e, nil
 }
 
+type limitedWriter struct {
+	buf []byte
+	max int
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	remaining := w.max - len(w.buf)
+	if remaining <= 0 {
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	w.buf = append(w.buf, p...)
+	return len(p), nil
+}
+
+func (w *limitedWriter) String() string { return string(w.buf) }
+
 func main() {
 	flag.Parse()
 	xslog.Init()
@@ -83,35 +102,36 @@ func main() {
 	slog.SetDefault(lg)
 
 	ctx := context.Background()
-	if err := run(ctx, lg, e); err != nil {
+	logs, err := run(ctx, lg, e)
+	if err != nil {
 		lg.Error("encode failed", "err", err)
-		if werr := postWebhook(ctx, e, encoder.WebhookFailed, err.Error()); werr != nil {
+		if werr := postWebhook(ctx, e, encoder.WebhookFailed, err.Error(), logs); werr != nil {
 			lg.Error("post failure webhook", "err", werr)
 		}
 		os.Exit(1)
 	}
 
-	if err := postWebhook(ctx, e, encoder.WebhookSucceeded, ""); err != nil {
+	if err := postWebhook(ctx, e, encoder.WebhookSucceeded, "", ""); err != nil {
 		lg.Error("post success webhook", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, lg *slog.Logger, e env) error {
+func run(ctx context.Context, lg *slog.Logger, e env) (string, error) {
 	work, err := os.MkdirTemp("", "videosite-encoder-*")
 	if err != nil {
-		return fmt.Errorf("mkdir tmp: %w", err)
+		return "", fmt.Errorf("mkdir tmp: %w", err)
 	}
 	defer os.RemoveAll(work)
 
 	dashDir := filepath.Join(work, "dash")
 	if err := os.MkdirAll(dashDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir dash: %w", err)
+		return "", fmt.Errorf("mkdir dash: %w", err)
 	}
 
 	s3c, err := newS3Client(ctx, e)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	srcExt := filepath.Ext(e.SourceKey)
@@ -120,26 +140,27 @@ func run(ctx context.Context, lg *slog.Logger, e env) error {
 	}
 	srcPath := filepath.Join(work, "source"+srcExt)
 	if err := download(ctx, s3c, e.SourceBucket, e.SourceKey, srcPath); err != nil {
-		return fmt.Errorf("download source: %w", err)
+		return "", fmt.Errorf("download source: %w", err)
 	}
 	lg.Info("downloaded source", "path", srcPath)
 
 	manifestPath := filepath.Join(dashDir, "manifest.mpd")
 	args := encoder.FFmpegArgs(srcPath, manifestPath)
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
+	lw := &limitedWriter{max: 64 << 10}
+	cmd.Stdout = io.MultiWriter(os.Stderr, lw)
+	cmd.Stderr = io.MultiWriter(os.Stderr, lw)
 	lg.Info("running ffmpeg", "args", strings.Join(args, " "))
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg: %w", err)
+		return lw.String(), fmt.Errorf("ffmpeg: %w", err)
 	}
 
 	uploaded, err := uploadDir(ctx, s3c, e.SourceBucket, e.DestPrefix, dashDir)
 	if err != nil {
-		return fmt.Errorf("upload outputs: %w", err)
+		return "", fmt.Errorf("upload outputs: %w", err)
 	}
 	lg.Info("uploaded outputs", "count", uploaded)
-	return nil
+	return "", nil
 }
 
 func newS3Client(ctx context.Context, e env) (*s3.Client, error) {
@@ -218,11 +239,12 @@ func uploadDir(ctx context.Context, c *s3.Client, bucket, prefix, dir string) (i
 	return count, err
 }
 
-func postWebhook(ctx context.Context, e env, status encoder.WebhookStatus, reason string) error {
+func postWebhook(ctx context.Context, e env, status encoder.WebhookStatus, reason, logs string) error {
 	body, err := json.Marshal(encoder.WebhookBody{
 		JobID:  e.JobID,
 		Status: status,
 		Reason: reason,
+		Logs:   logs,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)

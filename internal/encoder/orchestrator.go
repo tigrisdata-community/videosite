@@ -231,7 +231,7 @@ func (o *Orchestrator) reconcile(ctx context.Context) {
 
 func (o *Orchestrator) reconcileJob(ctx context.Context, job *models.EncodingJob) {
 	if job.StartedAt != nil && time.Since(*job.StartedAt) > maxJobDuration {
-		o.completeJob(ctx, job, false, "exceeded max job duration")
+		o.completeJob(ctx, job, false, "exceeded max job duration", "")
 		return
 	}
 	if job.VastInstanceID == 0 {
@@ -239,7 +239,7 @@ func (o *Orchestrator) reconcileJob(ctx context.Context, job *models.EncodingJob
 	}
 	inst, err := o.vast.GetInstance(ctx, job.VastInstanceID)
 	if errors.Is(err, ErrInstanceGone) {
-		o.completeJob(ctx, job, false, "vast instance disappeared")
+		o.completeJob(ctx, job, false, "vast instance disappeared", "")
 		return
 	}
 	if err != nil {
@@ -248,14 +248,14 @@ func (o *Orchestrator) reconcileJob(ctx context.Context, job *models.EncodingJob
 	}
 	if inst.ActualStatus == "exited" || inst.ActualStatus == "stopped" {
 		o.completeJob(ctx, job, false,
-			fmt.Sprintf("instance ended (status=%s msg=%s) without webhook", inst.ActualStatus, inst.StatusMsg))
+			fmt.Sprintf("instance ended (status=%s msg=%s) without webhook", inst.ActualStatus, inst.StatusMsg), "")
 	}
 }
 
 // completeJob transitions the EncodingJob + Video together and tears down
 // the instance and IAM key. All steps are idempotent and ignore "already
 // done" errors, so it's safe to call from both the webhook and the janitor.
-func (o *Orchestrator) completeJob(ctx context.Context, job *models.EncodingJob, ok bool, reason string) {
+func (o *Orchestrator) completeJob(ctx context.Context, job *models.EncodingJob, ok bool, reason, logs string) {
 	var jobErr error
 	if ok {
 		jobErr = o.dao.MarkEncodingJobSucceeded(ctx, job.ID)
@@ -267,7 +267,13 @@ func (o *Orchestrator) completeJob(ctx context.Context, job *models.EncodingJob,
 	} else {
 		jobErr = o.dao.MarkEncodingJobFailed(ctx, job.ID, reason)
 		if jobErr == nil {
-			if err := o.dao.MarkVideoFailed(ctx, job.VideoID, reason); err != nil && !errors.Is(err, models.ErrConflict) {
+			var err error
+			if logs != "" {
+				err = o.dao.MarkVideoFailedWithLogs(ctx, job.VideoID, reason, logs)
+			} else {
+				err = o.dao.MarkVideoFailed(ctx, job.VideoID, reason)
+			}
+			if err != nil && !errors.Is(err, models.ErrConflict) {
 				o.log.Error("mark video failed", "err", err, "video_id", job.VideoID)
 			}
 		}
@@ -349,6 +355,7 @@ type WebhookBody struct {
 	JobID  string        `json:"job_id"`
 	Status WebhookStatus `json:"status"`
 	Reason string        `json:"reason,omitempty"`
+	Logs   string        `json:"logs,omitempty"`
 }
 
 // SignWebhookBody returns the X-Webhook-Signature value for body+secret.
@@ -364,7 +371,7 @@ func verifySignature(secret string, body []byte, header string) bool {
 }
 
 func (o *Orchestrator) handleWebhook(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<10))
+	body, err := io.ReadAll(io.LimitReader(r.Body, 128<<10))
 	if err != nil {
 		http.Error(w, "read body", http.StatusBadRequest)
 		return
@@ -389,13 +396,13 @@ func (o *Orchestrator) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	switch msg.Status {
 	case WebhookSucceeded:
-		o.completeJob(r.Context(), job, true, "")
+		o.completeJob(r.Context(), job, true, "", "")
 	case WebhookFailed:
 		reason := msg.Reason
 		if reason == "" {
 			reason = "encoder reported failure"
 		}
-		o.completeJob(r.Context(), job, false, reason)
+		o.completeJob(r.Context(), job, false, reason, msg.Logs)
 	default:
 		http.Error(w, fmt.Sprintf("unknown status %q", msg.Status), http.StatusBadRequest)
 		return

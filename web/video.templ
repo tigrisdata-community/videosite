@@ -26,6 +26,12 @@ templ VideoStatusPanel(v *models.Video, manifestURL string) {
 		if v.Status == models.VideoStatusFailed && v.FailureReason != "" {
 			<p>Failure reason: <code>{ v.FailureReason }</code></p>
 		}
+		if v.Status == models.VideoStatusFailed && v.EncodeLogs != "" {
+			<details>
+				<summary>Encoder output</summary>
+				<pre style="max-height: 24em; overflow: auto; white-space: pre-wrap; word-break: break-word; background: #111; color: #eee; padding: 0.75em; border-radius: 4px; font-size: 0.85em">{ v.EncodeLogs }</pre>
+			</details>
+		}
 		if v.Status == models.VideoStatusReady {
 			<video
 				data-dashjs-player
