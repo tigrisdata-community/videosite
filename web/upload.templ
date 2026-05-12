@@ -26,6 +26,6 @@ templ Upload() {
 
 templ UploadedRow(v *models.Video) {
 	<li>
-		<strong>{ v.Filename }</strong> &mdash; <code>{ v.ID }</code> &mdash; { string(v.Status) }
+		<strong>{ v.Filename }</strong> &mdash; <a href={ templ.URL("/v/" + v.ID) }><code>{ v.ID }</code></a> &mdash; { string(v.Status) }
 	</li>
 }

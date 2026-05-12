@@ -1,0 +1,38 @@
+package web
+
+import "github.com/tigrisdata-community/videosite/internal/models"
+
+templ Video(v *models.Video, manifestURL string) {
+	<style>
+    video {
+      max-width: 100%;
+    }
+  </style>
+	@VideoStatusPanel(v, manifestURL)
+}
+
+templ VideoStatusPanel(v *models.Video, manifestURL string) {
+	<div
+		id="video-status"
+		if v.Status != models.VideoStatusReady && v.Status != models.VideoStatusFailed {
+			hx-get={ "/v/" + v.ID + "/status" }
+			hx-trigger="every 5s"
+			hx-swap="outerHTML"
+		}
+	>
+		<p>Filename: <code>{ v.Filename }</code></p>
+		<p>ID: <code>{ v.ID }</code></p>
+		<p>Status: <strong>{ string(v.Status) }</strong></p>
+		if v.Status == models.VideoStatusFailed && v.FailureReason != "" {
+			<p>Failure reason: <code>{ v.FailureReason }</code></p>
+		}
+		if v.Status == models.VideoStatusReady {
+			<video
+				data-dashjs-player
+				controls
+				src={ templ.URL(manifestURL) }
+			></video>
+			<script src="/static/js/dash.js" async></script>
+		}
+	</div>
+}

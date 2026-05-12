@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/a-h/templ"
+	"gorm.io/gorm"
 
 	"github.com/tigrisdata-community/videosite/internal/alpinejs"
 	"github.com/tigrisdata-community/videosite/internal/encoder"
@@ -112,6 +115,8 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.Handle("/static/", http.FileServerFS(web.Static))
 	mux.Handle("/{$}", s.indexPage())
 	mux.Handle("/upload", s.uploadPage())
+	mux.Handle("GET /v/{id}", s.videoPage())
+	mux.Handle("GET /v/{id}/status", s.videoStatus())
 	mux.Handle("/", templ.Handler(
 		xess.Simple("Not found", web.NotFound()),
 		templ.WithStatus(http.StatusNotFound),
@@ -138,4 +143,66 @@ func (s *Server) uploadPage() http.Handler {
 		web.Upload(),
 		web.Footer(),
 	))
+}
+
+func (s *Server) manifestURL(id string) string {
+	return strings.TrimRight(s.cfg.BucketURLBase, "/") + "/v/" + id + "/manifest.mpd"
+}
+
+func (s *Server) videoPage() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		v, err := s.dao.GetVideo(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				w.WriteHeader(http.StatusNotFound)
+				_ = xess.Simple("Not found", web.NotFound()).Render(r.Context(), w)
+				return
+			}
+			s.lg.Error("get video", "err", err, "id", id)
+			http.Error(w, "get video", http.StatusInternalServerError)
+			return
+		}
+		title := v.Filename
+		if title == "" {
+			title = v.ID
+		}
+		page := xess.Base(
+			title,
+			web.HeadArea(),
+			web.Navbar(),
+			web.Video(v, s.manifestURL(v.ID)),
+			web.Footer(),
+		)
+		if err := page.Render(r.Context(), w); err != nil {
+			s.lg.Error("render video page", "err", err, "id", id)
+		}
+	})
+}
+
+func (s *Server) videoStatus() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if !htmx.Is(r) {
+			http.Redirect(w, r, "/v/"+id, http.StatusSeeOther)
+			return
+		}
+		v, err := s.dao.GetVideo(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			s.lg.Error("get video status", "err", err, "id", id)
+			http.Error(w, "get video", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if v.Status == models.VideoStatusReady || v.Status == models.VideoStatusFailed {
+			w.WriteHeader(htmx.StatusStopPolling)
+		}
+		if err := web.VideoStatusPanel(v, s.manifestURL(v.ID)).Render(r.Context(), w); err != nil {
+			s.lg.Error("render video status", "err", err, "id", id)
+		}
+	})
 }
