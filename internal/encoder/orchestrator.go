@@ -39,12 +39,13 @@ type Config struct {
 }
 
 const (
-	tickInterval    = 10 * time.Second
-	maxJobDuration  = 2 * time.Hour
-	encoderDiskGB   = 32
-	webhookSigHdr   = "X-Webhook-Signature"
-	cleanupInterval = 1 * time.Hour
-	staleKeyAge     = 48 * time.Hour
+	claimInterval     = 10 * time.Second
+	reconcileInterval = 5 * time.Minute
+	maxJobDuration    = 2 * time.Hour
+	encoderDiskGB     = 32
+	webhookSigHdr     = "X-Webhook-Signature"
+	cleanupInterval   = 1 * time.Hour
+	staleKeyAge       = 48 * time.Hour
 
 	// DefaultMinReliability is the host reliability floor the orchestrator
 	// passes to PreferredOfferQuery. Exported so the vast-search CLI can
@@ -64,33 +65,44 @@ func (o *Orchestrator) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/encode-callback", o.handleWebhook)
 }
 
-// Start kicks off the background loops. Both exit when ctx is cancelled.
-// The main loop drives claim+reconcile on a 10s tick; the cleanup loop
-// sweeps stale IAM keys hourly so a crash between mint and the
+// Start kicks off the background loops. They all exit when ctx is cancelled.
+// Claim runs fast so a newly-uploaded video starts encoding promptly; it only
+// hits vast.ai when a pending row exists. Reconcile polls vast.ai for every
+// running job, so it runs on a much slower cadence to stay under the API rate
+// limit. Cleanup sweeps stale IAM keys hourly so a crash between mint and the
 // completion path doesn't leak credentials forever.
 func (o *Orchestrator) Start(ctx context.Context) {
-	go o.loop(ctx)
+	go o.claimLoop(ctx)
+	go o.reconcileLoop(ctx)
 	go o.cleanupLoop(ctx)
 }
 
-func (o *Orchestrator) loop(ctx context.Context) {
-	t := time.NewTicker(tickInterval)
+func (o *Orchestrator) claimLoop(ctx context.Context) {
+	t := time.NewTicker(claimInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			o.tick(ctx)
+			if err := o.claimAndLaunchOne(ctx); err != nil && !errors.Is(err, models.ErrNoPending) {
+				o.log.Error("claim/launch", "err", err)
+			}
 		}
 	}
 }
 
-func (o *Orchestrator) tick(ctx context.Context) {
-	if err := o.claimAndLaunchOne(ctx); err != nil && !errors.Is(err, models.ErrNoPending) {
-		o.log.Error("claim/launch", "err", err)
+func (o *Orchestrator) reconcileLoop(ctx context.Context) {
+	t := time.NewTicker(reconcileInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			o.reconcile(ctx)
+		}
 	}
-	o.reconcile(ctx)
 }
 
 // claimAndLaunchOne is the saga: claim → IAM key → search → mint → record.
