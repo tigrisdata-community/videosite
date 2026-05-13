@@ -144,8 +144,15 @@ func run(ctx context.Context, lg *slog.Logger, e env) (string, error) {
 	}
 	lg.Info("downloaded source", "path", srcPath)
 
+	probe, err := encoder.Probe(ctx, srcPath)
+	if err != nil {
+		return "", fmt.Errorf("ffprobe: %w", err)
+	}
+	variants := encoder.PlanVariants(probe)
+	lg.Info("probed source", "width", probe.Width, "height", probe.Height, "variants", len(variants))
+
 	manifestPath := filepath.Join(dashDir, "manifest.mpd")
-	args := encoder.FFmpegArgs(srcPath, manifestPath)
+	args := encoder.FFmpegArgs(srcPath, manifestPath, variants)
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	lw := &limitedWriter{max: 64 << 10}
 	cmd.Stdout = io.MultiWriter(os.Stderr, lw)
